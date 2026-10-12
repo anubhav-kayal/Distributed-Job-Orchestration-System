@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from djos.api import health
+from djos.api import health, jobs
 from djos.core import db, redis
 from djos.core.config import Settings, get_settings
 
@@ -26,6 +26,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Distributed Job Orchestration System", lifespan=lifespan)
     app.include_router(health.router)
+    app.include_router(jobs.router)
     return app
 
 

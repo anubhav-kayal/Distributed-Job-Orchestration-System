@@ -79,3 +79,6 @@ class Job(Base):
         CheckConstraint("attempts >= 0", name="attempts_non_negative"),
         Index("ix_jobs_status_created_at", "status", "created_at"),
     )
+    # Fetch DB-generated values (updated_at = now()) via RETURNING on INSERT/UPDATE.
+    # Without this they'd be lazily reloaded on access, which async sessions can't do.
+    __mapper_args__ = {"eager_defaults": True}
