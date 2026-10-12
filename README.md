@@ -1,9 +1,9 @@
 # Distributed-Job-Orchestration-System
 
-A distributed, fault-tolerant job processing system. Clients submit long-running async jobs; independent worker processes execute them with guaranteed exactly-once processing — even when workers crash mid-job.
+A distributed, fault-tolerant job orchestration system. Clients submit long-running async jobs (or whole DAG workflows); independent worker processes execute them with **exactly-once effects**, even when workers crash or stall mid-job.
 
 ## Status
-🚧 Work in progress — building in public. See [Roadmap](#roadmap) below.
+🚧 Work in progress — building in public. See the [3-week plan](PLAN.md).
 
 ## The Problem
 
@@ -11,52 +11,72 @@ Background job systems are easy until a worker dies mid-task. Naive designs eith
 - **Lose the job** (nobody notices the worker died), or
 - **Duplicate it** (a slow-but-alive worker gets mistaken for a dead one and another worker re-runs the same job).
 
-forge-queue solves this with distributed locks, heartbeats, and a monitor process that reclaims orphaned jobs safely.
+This project solves both with lease-based distributed locks, heartbeats, fencing tokens, and a monitor process that reclaims orphaned jobs safely.
 
 ## Architecture (planned)
 
 ```
-Client → API (FastAPI) → Redis (priority queues + distributed locks)
-                              ↓
-                    Worker containers (N, independent)
-                              ↓
-                        PostgreSQL (durable job state)
-                              ↑
-                     Monitor (detects & reclaims orphaned jobs)
+Client ─► API (FastAPI, API keys, rate limit) ─► Postgres (source of truth)
+                     │                                ▲ fenced writes
+                     ▼                                │
+                  Redis (priority queues, leases, delayed jobs, rate limits)
+                     │
+                 Workers ×N ◄── Autoscaler (queue depth)
+Scheduler (retries / delayed / cron) · Monitor (lease reclaim, Postgres ↔ Redis reconcile)
+Prometheus + Grafana scrape everything
 ```
 
 ## Core Guarantees
 
-- **Exactly-once processing** — Redis `SET NX EX` locks ensure only one worker ever claims a job
-- **Failure detection** — workers heartbeat by renewing their lock; a dead worker's lock expires and the job is reclaimed
-- **Durable state** — job history lives in Postgres, not just Redis
-- **Idempotent submission** — retried client requests (via idempotency key) never create duplicate jobs
-- **Retry + dead-letter queue** — failed jobs retry with exponential backoff, then land in a DLQ for inspection
+True exactly-once *execution* is impossible in a distributed system: a worker can stall (GC pause, network partition), lose its lease, and wake up still believing it owns the job. So the guarantee here is:
+
+> **At-least-once execution + fencing tokens + idempotent effects = exactly-once effects.**
+
+- **Lease-based claiming:** Redis `SET NX PX` ensures only one worker holds a job's lease at a time
+- **Failure detection:** workers heartbeat by renewing their lease; a dead worker's lease expires and the job is reclaimed
+- **Fencing tokens:** every claim gets a monotonically increasing token; Postgres rejects writes from a stale worker holding an old token
+- **Durable state:** Postgres is the source of truth; Redis can be rebuilt from it
+- **Idempotent submission:** retried client requests (via idempotency key) never create duplicate jobs
+- **Retry + dead-letter queue:** failed jobs retry with exponential backoff and jitter, then land in a DLQ for inspection
+- **Verified by chaos testing:** workers are randomly killed and paused under load, and a checker asserts zero lost and zero duplicated effects
 
 ## Tech Stack
 
-- **API:** FastAPI
-- **Queue & Coordination:** Redis (priority queues, distributed locks)
-- **Durable State:** PostgreSQL
-- **Orchestration:** Docker Compose (multi-worker)
+- **API:** FastAPI (Python 3.12, asyncio)
+- **Queue & Coordination:** Redis 7 (priority queues, leases, Lua scripts)
+- **Durable State:** PostgreSQL 16 (SQLAlchemy 2 async, Alembic)
+- **Observability:** Prometheus, Grafana, structured JSON logs
+- **Orchestration:** Docker Compose (multi-worker), GitHub Actions CI
 
 ## Roadmap
 
-- [ ] Week 1 — Core pipeline: API, single worker, happy-path job execution
-- [ ] Week 2 — Multi-worker coordination: distributed locks, heartbeats, reclaim logic
-- [ ] Week 3 — Reliability: retries with backoff, dead-letter queue, priority tiers, idempotency
-- [ ] Week 4 — Chaos testing: scripted worker kills, correctness verification, results write-up
+- [ ] Week 1: core pipeline, multi-worker coordination, heartbeats, fencing tokens
+- [ ] Week 2: retries + DLQ, priorities, scheduled/cron jobs, DAG workflows, multi-tenancy & rate limiting
+- [ ] Week 3: metrics + Grafana, chaos testing, autoscaling, benchmarks, Redis vs. Postgres `SKIP LOCKED` comparison
+
+Day-by-day details are in [PLAN.md](PLAN.md).
 
 ## Known Limitations
 
-Redis is a single point of failure for coordination in this design (a production system would use Redis Sentinel/Cluster or a consensus-based coordinator like etcd). This project focuses on correct multi-worker coordination logic, not full node-level fault tolerance.
+Redis is a single point of failure for coordination in this design (a production system would use Redis Sentinel/Cluster or a consensus-based coordinator like etcd). Because Postgres is the source of truth, a Redis loss delays jobs but does not lose them. This project focuses on correct multi-worker coordination logic, not full node-level fault tolerance.
 
 ## Getting Started
 
+Requires Docker and [uv](https://docs.astral.sh/uv/).
+
 ```bash
-# coming soon
-docker compose up
+docker compose up -d --build --wait     # API, Postgres, Redis
+
+curl localhost:58000/healthz            # liveness  → {"status":"ok"}
+curl localhost:58000/readyz             # readiness → checks Postgres + Redis
+
+uv sync                                 # local dev environment
+uv run pytest                           # tests (integration tests need the stack running)
+uv run pytest -m "not integration"      # tests that need no services
+uv run ruff check . && uv run ruff format --check .
 ```
+
+Host ports default to `58000` (API), `55432` (Postgres) and `56379` (Redis) to avoid clashing with locally installed services. Override them with `DJOS_API_HOST_PORT`, `DJOS_PG_HOST_PORT` and `DJOS_REDIS_HOST_PORT`.
 
 ## License
 
