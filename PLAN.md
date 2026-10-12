@@ -75,7 +75,7 @@ Client ──► API (FastAPI) ──► Postgres  (source of truth: jobs, DAG e
 ## Repo Layout (target)
 
 ```
-app/
+src/djos/
   api/          # FastAPI routes: jobs, workflows, cron, dlq, tenants
   core/         # config, db session, redis client, logging, metrics
   models/       # SQLAlchemy models
