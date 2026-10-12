@@ -8,8 +8,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="DJOS_", env_file=".env", extra="ignore")
 
-    database_url: str = "postgresql+asyncpg://djos:djos@localhost:5432/djos"
-    redis_url: str = "redis://localhost:6379/0"
+    database_url: str = "postgresql+asyncpg://djos:djos@localhost:55432/djos"
+    redis_url: str = "redis://localhost:56379/0"
     log_level: str = "INFO"
     # How long a readiness probe waits on a dependency before calling it down.
     dependency_timeout_seconds: float = 2.0

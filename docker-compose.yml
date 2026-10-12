@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: djos
+      POSTGRES_PASSWORD: djos
+      POSTGRES_DB: djos
+    ports:
+      - "${DJOS_PG_HOST_PORT:-55432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U djos -d djos"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${DJOS_REDIS_HOST_PORT:-56379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  api:
+    build: .
+    environment:
+      DJOS_DATABASE_URL: postgresql+asyncpg://djos:djos@postgres:5432/djos
+      DJOS_REDIS_URL: redis://redis:6379/0
+    ports:
+      - "${DJOS_API_HOST_PORT:-58000}:8000"
+    healthcheck:
+      # The slim image has no curl, so use Python's stdlib to hit the liveness probe.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
