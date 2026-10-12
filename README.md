@@ -76,6 +76,31 @@ uv run pytest -m "not integration"      # tests that need no services
 uv run ruff check . && uv run ruff format --check .
 ```
 
+`docker compose up` runs database migrations automatically (the one-shot `migrate` service) before the API starts. Interactive API docs: http://localhost:58000/docs
+
+### Jobs API
+
+```bash
+# Submit (201). Retrying with the same Idempotency-Key returns the same job (200,
+# Idempotent-Replayed: true); reusing the key with a different body is a 422.
+curl -X POST localhost:58000/jobs \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: order-42' \
+  -d '{"type": "sleep", "payload": {"seconds": 2}, "priority": "high"}'
+
+curl localhost:58000/jobs/<id>                       # fetch one
+curl 'localhost:58000/jobs?status=queued&limit=20'   # list / filter / paginate
+curl -X POST localhost:58000/jobs/<id>/cancel        # only while queued, else 409
+```
+
+Job lifecycle (enforced in [`jobs/states.py`](src/djos/jobs/states.py)):
+
+```
+queued ──► running ──► succeeded
+  │          │  └────► failed
+  │          └───────► queued      (lease expired / retry)
+  └──────────────────► cancelled
+```
+
 Host ports default to `58000` (API), `55432` (Postgres) and `56379` (Redis) to avoid clashing with locally installed services. Override them with `DJOS_API_HOST_PORT`, `DJOS_PG_HOST_PORT` and `DJOS_REDIS_HOST_PORT`.
 
 ## License
