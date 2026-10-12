@@ -25,8 +25,19 @@ services:
       timeout: 3s
       retries: 15
 
-  api:
+  # One-shot: applies migrations, then exits. The API waits for it to succeed.
+  migrate:
+    image: djos:local
     build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DJOS_DATABASE_URL: postgresql+asyncpg://djos:djos@postgres:5432/djos
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    image: djos:local
     environment:
       DJOS_DATABASE_URL: postgresql+asyncpg://djos:djos@postgres:5432/djos
       DJOS_REDIS_URL: redis://redis:6379/0
@@ -39,8 +50,8 @@ services:
       timeout: 3s
       retries: 10
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
