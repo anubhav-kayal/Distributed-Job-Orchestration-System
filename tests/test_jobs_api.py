@@ -60,7 +60,7 @@ def test_same_idempotency_key_returns_same_job(client):
 
 def test_idempotency_key_reused_with_different_body_is_422(client):
     submit(client, {"type": "sleep"}, key="k1")
-    resp = submit(client, {"type": "hash"}, key="k1")
+    resp = submit(client, {"type": "sleep", "payload": {"seconds": 5}}, key="k1")
     assert resp.status_code == 422
     assert "different request body" in resp.json()["detail"]
 

@@ -2,8 +2,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from djos.handlers import UnknownJobType, get_handler, registered_types
 from djos.models import JobStatus, Priority
 
 
@@ -14,6 +15,26 @@ class JobCreate(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     priority: Priority = Priority.NORMAL
     max_attempts: int = Field(default=3, ge=1, le=25)
+
+    @model_validator(mode="after")
+    def validate_payload_for_type(self) -> "JobCreate":
+        try:
+            handler = get_handler(self.type)
+        except UnknownJobType:
+            raise ValueError(
+                f"unknown job type {self.type!r}; expected one of {registered_types()}"
+            ) from None
+        try:
+            validated = handler.payload_model.model_validate(self.payload)
+        except ValidationError as exc:
+            problems = "; ".join(
+                f"payload.{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()
+            )
+            raise ValueError(f"invalid payload for {self.type!r}: {problems}") from None
+        # Store the normalized dump: defaults are filled in and the worker sees exactly
+        # what was validated.
+        self.payload = validated.model_dump(mode="json")
+        return self
 
 
 class JobOut(BaseModel):
