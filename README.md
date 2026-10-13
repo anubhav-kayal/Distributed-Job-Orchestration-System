@@ -65,7 +65,8 @@ Redis is a single point of failure for coordination in this design (a production
 Requires Docker and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-docker compose up -d --build --wait     # API, Postgres, Redis
+docker compose up -d --build --wait     # API, worker, Postgres, Redis
+docker compose up -d --scale worker=3   # more workers
 
 curl localhost:58000/healthz            # liveness  → {"status":"ok"}
 curl localhost:58000/readyz             # readiness → checks Postgres + Redis
@@ -91,6 +92,17 @@ curl localhost:58000/jobs/<id>                       # fetch one
 curl 'localhost:58000/jobs?status=queued&limit=20'   # list / filter / paginate
 curl -X POST localhost:58000/jobs/<id>/cancel        # only while queued, else 409
 ```
+
+Job types (each with a validated payload schema, see [`handlers/builtin.py`](src/djos/handlers/builtin.py)):
+
+| Type | Payload | What it simulates |
+|---|---|---|
+| `sleep` | `{"seconds": 1.0}` | I/O-bound work |
+| `hash` | `{"data": "...", "iterations": 100000}` | CPU-bound work (runs in a thread) |
+| `fake_email` | `{"to": "a@b.co", "subject": "..."}` | an external API call |
+| `flaky` | `{"fail_times": 1}` | fails on its first N attempts |
+
+How a job flows: the API commits the job to Postgres, **then** pushes its ID onto a Redis list (`q:high` / `q:normal` / `q:low`). A worker pops the highest-priority ID with `BLMPOP`, claims the job in Postgres (`SELECT ... FOR UPDATE`, only if still `queued`), runs the handler and records the result. Redis only carries IDs; Postgres decides what runs, so duplicate or stale IDs are harmless.
 
 Job lifecycle (enforced in [`jobs/states.py`](src/djos/jobs/states.py)):
 
