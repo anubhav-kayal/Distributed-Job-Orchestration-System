@@ -55,5 +55,19 @@ services:
       redis:
         condition: service_healthy
 
+  worker:
+    image: djos:local
+    command: ["python", "-m", "djos.worker"]
+    environment:
+      DJOS_DATABASE_URL: postgresql+asyncpg://djos:djos@postgres:5432/djos
+      DJOS_REDIS_URL: redis://redis:6379/0
+    # Give an in-flight job time to finish after SIGTERM before Docker sends SIGKILL.
+    stop_grace_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
