@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from djos.api import health, jobs
 from djos.core import db, redis
 from djos.core.config import Settings, get_settings
+from djos.queue import RedisQueue
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -18,6 +19,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.engine = db.create_engine(settings.database_url)
         app.state.sessionmaker = db.create_sessionmaker(app.state.engine)
         app.state.redis = redis.create_redis(settings.redis_url)
+        app.state.queue = RedisQueue(app.state.redis)
         try:
             yield
         finally:

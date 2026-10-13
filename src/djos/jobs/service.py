@@ -1,7 +1,9 @@
 import hashlib
 import json
+import logging
 import uuid
 
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from djos.jobs.schemas import JobCreate
 from djos.jobs.states import transition
 from djos.models import Job, JobStatus
+from djos.queue import RedisQueue
+
+log = logging.getLogger(__name__)
 
 
 class JobNotFound(Exception):
@@ -61,6 +66,29 @@ async def create_job(
     if existing.request_hash != fingerprint:
         raise IdempotencyKeyReused(idempotency_key)
     return existing, False
+
+
+async def submit_job(
+    session: AsyncSession, queue: RedisQueue, data: JobCreate, idempotency_key: str | None = None
+) -> tuple[Job, bool]:
+    """Create the job durably in Postgres, then push its ID onto the Redis queue.
+
+    This is a dual write (two systems, no shared transaction), so the order matters:
+    - Commit first, push second. Pushing first could hand a worker an ID whose row
+      isn't committed yet, or never will be if the commit fails.
+    - If the push fails, the job is still safely `queued` in Postgres, so we don't fail
+      the request. A client retry with the same Idempotency-Key pushes it again, and
+      the monitor (Day 5) re-enqueues stranded jobs.
+    Pushing an ID twice is harmless: workers claim jobs through Postgres, and a job
+    that is no longer `queued` is skipped.
+    """
+    job, created = await create_job(session, data, idempotency_key)
+    if job.status is JobStatus.QUEUED:
+        try:
+            await queue.enqueue(job.id, job.priority)
+        except RedisError:
+            log.warning("enqueue failed; job %s is stored but not yet queued", job.id)
+    return job, created
 
 
 async def get_job(session: AsyncSession, job_id: uuid.UUID) -> Job:

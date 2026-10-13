@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 
-from djos.api.deps import SessionDep
+from djos.api.deps import QueueDep, SessionDep
 from djos.jobs import service
 from djos.jobs.schemas import JobCreate, JobList, JobOut
 from djos.jobs.states import InvalidTransition
@@ -24,13 +24,14 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 async def submit_job(
     body: JobCreate,
     session: SessionDep,
+    queue: QueueDep,
     response: Response,
     idempotency_key: Annotated[
         str | None, Header(alias="Idempotency-Key", min_length=1, max_length=255)
     ] = None,
 ) -> JobOut:
     try:
-        job, created = await service.create_job(session, body, idempotency_key)
+        job, created = await service.submit_job(session, queue, body, idempotency_key)
     except service.IdempotencyKeyReused:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,

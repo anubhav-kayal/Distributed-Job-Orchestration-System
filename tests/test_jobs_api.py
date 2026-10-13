@@ -2,6 +2,10 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+import redis as sync_redis
+from fastapi.testclient import TestClient
+
+from djos.api.main import create_app
 
 pytestmark = pytest.mark.integration
 
@@ -111,3 +115,40 @@ def test_cancel_twice_is_409(client):
 
 def test_cancel_unknown_job_is_404(client):
     assert client.post(f"/jobs/{uuid.uuid4()}/cancel").status_code == 404
+
+
+@pytest.fixture
+def redis_sync(test_settings):
+    with sync_redis.Redis.from_url(test_settings.redis_url, decode_responses=True) as r:
+        yield r
+
+
+def test_submit_pushes_job_id_onto_its_priority_queue(client, redis_sync):
+    job = submit(client, {"type": "sleep", "priority": "high"}).json()
+    assert redis_sync.lrange("q:high", 0, -1) == [job["id"]]
+    assert redis_sync.llen("q:normal") == 0
+
+
+def test_idempotent_replay_of_queued_job_pushes_again(client, redis_sync):
+    # Re-pushing heals a push that failed the first time; the duplicate is harmless
+    # because workers only run jobs that are still `queued` in Postgres.
+    job = submit(client, key="k").json()
+    submit(client, key="k")
+    assert redis_sync.lrange("q:normal", 0, -1) == [job["id"], job["id"]]
+
+
+def test_replay_of_cancelled_job_does_not_push(client, redis_sync):
+    job = submit(client, key="k").json()
+    client.post(f"/jobs/{job['id']}/cancel")
+    redis_sync.delete("q:normal")
+    submit(client, key="k")
+    assert redis_sync.llen("q:normal") == 0
+
+
+def test_submit_succeeds_when_redis_is_down(test_settings, clean_state):
+    # Postgres is the source of truth: the job is stored and the push is retried later.
+    settings = test_settings.model_copy(update={"redis_url": "redis://127.0.0.1:1/0"})
+    with TestClient(create_app(settings)) as c:
+        resp = submit(c)
+        assert resp.status_code == 201
+        assert c.get(f"/jobs/{resp.json()['id']}").json()["status"] == "queued"
