@@ -4,6 +4,7 @@ import asyncio
 import logging
 import signal
 
+from djos.coordination import Leases
 from djos.core import db, redis
 from djos.core.config import get_settings
 from djos.queue import RedisQueue
@@ -21,6 +22,7 @@ async def main() -> None:
     worker = Worker(
         db.create_sessionmaker(engine),
         RedisQueue(redis_client),
+        Leases(redis_client, ttl_seconds=settings.lease_ttl_seconds),
         block_seconds=settings.worker_block_seconds,
     )
 

@@ -62,6 +62,9 @@ class Job(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True)
     request_hash: Mapped[str | None] = mapped_column(String(64))
 
+    # Worker that most recently claimed the job (kept after it finishes, for debugging).
+    locked_by: Mapped[str | None] = mapped_column(String(255))
+
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     last_error: Mapped[str | None] = mapped_column(Text)
 

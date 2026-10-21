@@ -48,6 +48,7 @@ class JobOut(BaseModel):
     attempts: int
     max_attempts: int
     idempotency_key: str | None
+    locked_by: str | None
     result: dict[str, Any] | None
     last_error: str | None
     created_at: datetime

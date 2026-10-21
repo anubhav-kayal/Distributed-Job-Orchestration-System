@@ -1,10 +1,15 @@
 """The worker loop: pop a job ID from Redis, claim it in Postgres, run it, record the outcome.
 
+Before claiming, the worker takes a lease on the job in Redis (see coordination/lease.py)
+and holds it until the outcome is recorded, so "running in Postgres" always comes with a
+live lease unless the worker died.
+
 Known gaps, closed on later days:
 - A crash after popping but before claiming loses the ID from Redis. The job is still
   `queued` in Postgres, and the monitor re-enqueues it (Day 5).
-- A crash while running leaves the job `running` forever. Leases and heartbeats detect
-  this, and the monitor reclaims the job (Days 4–5).
+- A crash while running leaves the job `running` until someone notices the lease is
+  gone; the monitor reclaims it (Day 5). Jobs longer than the lease TTL need
+  heartbeats to keep the lease alive (Day 5).
 - A stalled worker could finish a job someone else has re-run. Fencing tokens reject
   its writes (Day 6).
 """
@@ -20,6 +25,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from djos.coordination import Leases
 from djos.handlers import JobContext, get_handler
 from djos.jobs.states import transition
 from djos.models import Job, JobStatus
@@ -40,12 +46,14 @@ class Worker:
         self,
         sessionmaker: async_sessionmaker,
         queue: RedisQueue,
+        leases: Leases,
         *,
         worker_id: str | None = None,
         block_seconds: float = 1.0,
     ):
         self.sessionmaker = sessionmaker
         self.queue = queue
+        self.leases = leases
         self.worker_id = worker_id or default_worker_id()
         self.block_seconds = block_seconds
 
@@ -71,9 +79,22 @@ class Worker:
         job_id = await self.queue.dequeue(block_seconds=self.block_seconds)
         if job_id is None:
             return False
-        job = await self._claim(job_id)
-        if job is not None:
-            await self._execute(job)
+
+        # Unique per claim, so a lease from this worker's earlier run of the same job
+        # can never be mistaken for the current one.
+        owner = f"{self.worker_id}:{uuid.uuid4().hex[:12]}"
+        if not await self.leases.acquire(job_id, owner):
+            log.info("job %s is leased by %s; skipping", job_id, await self.leases.holder(job_id))
+            return True
+        try:
+            job = await self._claim(job_id)
+            if job is not None:
+                await self._execute(job)
+        finally:
+            try:
+                await self.leases.release(job_id, owner)
+            except RedisError:
+                log.warning("could not release lease on %s; it will expire", job_id)
         return True
 
     async def _claim(self, job_id: uuid.UUID) -> Job | None:
@@ -91,6 +112,7 @@ class Worker:
                 log.info("job %s is %s, not queued; skipping", job_id, job.status)
                 return None
             transition(job, JobStatus.RUNNING)
+            job.locked_by = self.worker_id
             await session.commit()
             return job
 

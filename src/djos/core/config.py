@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     dependency_timeout_seconds: float = 2.0
     # How long a worker blocks on an empty queue before re-checking for shutdown.
     worker_block_seconds: float = 1.0
+    # A worker's lease on a running job expires after this long unless renewed.
+    lease_ttl_seconds: float = 30.0
 
 
 @lru_cache

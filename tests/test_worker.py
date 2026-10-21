@@ -3,6 +3,7 @@ import uuid
 
 import pytest
 
+from djos.coordination import Leases, lease_key
 from djos.jobs import service
 from djos.jobs.schemas import JobCreate
 from djos.models import Job, JobStatus, Priority
@@ -12,8 +13,13 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def worker(sessionmaker, queue) -> Worker:
-    return Worker(sessionmaker, queue, worker_id="test-worker", block_seconds=0.1)
+def leases(redis) -> Leases:
+    return Leases(redis, ttl_seconds=5)
+
+
+@pytest.fixture
+def worker(sessionmaker, queue, leases) -> Worker:
+    return Worker(sessionmaker, queue, leases, worker_id="test-worker", block_seconds=0.1)
 
 
 async def submit(sessionmaker, queue, **body) -> uuid.UUID:
@@ -115,3 +121,51 @@ async def test_run_loop_drains_queue_and_stops_on_signal(worker, sessionmaker, q
 
     stop.set()
     await asyncio.wait_for(task, timeout=2)
+
+
+async def test_records_which_worker_ran_the_job(worker, sessionmaker, queue):
+    job_id = await submit(sessionmaker, queue)
+    await worker.process_next()
+    assert (await load(sessionmaker, job_id)).locked_by == "test-worker"
+
+
+async def test_lease_is_released_after_the_job_finishes(worker, sessionmaker, queue, leases):
+    job_id = await submit(sessionmaker, queue)
+    await worker.process_next()
+    assert await leases.holder(job_id) is None
+
+
+async def test_job_leased_by_another_worker_is_skipped(worker, sessionmaker, queue, leases):
+    job_id = await submit(sessionmaker, queue)
+    await leases.acquire(job_id, "someone-else")
+
+    await worker.process_next()
+
+    assert (await load(sessionmaker, job_id)).status is JobStatus.QUEUED
+    assert await leases.holder(job_id) == "someone-else"  # not released by us
+
+
+async def test_lease_is_held_while_the_handler_runs(worker, sessionmaker, queue, redis):
+    job_id = await submit(sessionmaker, queue, payload={"seconds": 0.3})
+    task = asyncio.create_task(worker.process_next())
+    await asyncio.sleep(0.15)
+    assert (await redis.get(lease_key(job_id))).startswith("test-worker:")
+    await task
+
+
+async def test_many_workers_claim_each_job_exactly_once(sessionmaker, queue, leases):
+    job_ids = [await submit(sessionmaker, queue) for _ in range(60)]
+    workers = [
+        Worker(sessionmaker, queue, leases, worker_id=f"w{i}", block_seconds=0.1) for i in range(4)
+    ]
+
+    async def drain(w: Worker) -> None:
+        while await w.process_next():
+            pass
+
+    await asyncio.gather(*(drain(w) for w in workers))
+
+    jobs = [await load(sessionmaker, j) for j in job_ids]
+    assert all(j.status is JobStatus.SUCCEEDED for j in jobs)
+    assert all(j.attempts == 1 for j in jobs)
+    assert len({j.locked_by for j in jobs}) > 1  # the work really was shared
