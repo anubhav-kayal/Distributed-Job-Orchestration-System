@@ -7,9 +7,12 @@ lease every `heartbeat_seconds`. If the lease is lost anyway (Redis unreachable 
 whole TTL, or the process stalled), the worker abandons the job: the monitor will
 already be handing it to someone else.
 
-Known gap, closed on Day 6:
-- A worker that stalls *without noticing* (e.g. a long GC pause) can wake up after its
-  job was reclaimed and re-run, and still write its result. Fencing tokens reject it.
+Abandoning on lease loss is only best effort: a worker that stalls *without noticing*
+(a long GC pause, a frozen VM, `docker pause`) can wake up after its job was reclaimed
+and re-run, and carry on as if nothing happened. That is what fencing tokens are for.
+Every claim gets a new, larger `lease_token`, and the final write only applies while the
+job still carries the token this worker claimed with. A stale worker's write matches
+nothing and is rejected, so each job's effect is recorded exactly once.
 """
 
 import asyncio
@@ -29,7 +32,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from djos.coordination import Leases
 from djos.handlers import JobContext, get_handler
 from djos.jobs.states import transition
-from djos.models import Job, JobStatus
+from djos.models import Effect, Job, JobStatus
 from djos.queue import RedisQueue
 
 log = logging.getLogger(__name__)
@@ -150,10 +153,15 @@ class Worker:
         heartbeat.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat
-        await self._finish(job.id, work.result())
+        await self._finish(job.id, job.lease_token, work.result())
 
     async def _invoke(self, job: Job) -> Outcome:
-        ctx = JobContext(job_id=job.id, attempt=job.attempts, worker_id=self.worker_id)
+        ctx = JobContext(
+            job_id=job.id,
+            attempt=job.attempts,
+            worker_id=self.worker_id,
+            lease_token=job.lease_token,
+        )
         try:
             handler = get_handler(job.type)
             payload = handler.payload_model.model_validate(job.payload)
@@ -184,17 +192,36 @@ class Worker:
                 raise LeaseLost("lease expired or taken over")
             last_renewed = time.monotonic()
 
-    async def _finish(self, job_id: uuid.UUID, outcome: Outcome) -> None:
+    async def _finish(self, job_id: uuid.UUID, token: int, outcome: Outcome) -> bool:
+        """Record the outcome, fenced by `token`. Returns False if the write was rejected
+        because the job has been reclaimed (and maybe re-run) since we claimed it."""
         async with self.sessionmaker() as session:
             job = (
                 await session.scalars(select(Job).where(Job.id == job_id).with_for_update())
             ).one()
-            if job.status is not JobStatus.RUNNING:
+            if job.status is not JobStatus.RUNNING or job.lease_token != token:
                 log.warning(
-                    "job %s changed to %s while running; dropping result", job_id, job.status
+                    "fenced: our token %d for job %s is stale (job is %s with token %d); "
+                    "discarding our result",
+                    token,
+                    job_id,
+                    job.status,
+                    job.lease_token,
                 )
-                return
+                return False
             job.result = outcome.result
             job.last_error = outcome.error
             transition(job, outcome.status)
+            if outcome.status is JobStatus.SUCCEEDED:
+                # Same transaction as the status change: the effect exists if and only if
+                # this claim's success was recorded.
+                session.add(
+                    Effect(
+                        job_id=job_id,
+                        lease_token=token,
+                        worker_id=self.worker_id,
+                        data=outcome.result,
+                    )
+                )
             await session.commit()
+            return True
