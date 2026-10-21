@@ -44,6 +44,9 @@ def transition(job: Job, target: JobStatus, *, now: datetime | None = None) -> N
     if target is JobStatus.RUNNING:
         # Each claim is one attempt; retries and reclaims count towards max_attempts.
         job.attempts += 1
+        # A new fencing token per claim. Unlike attempts it is never reset, so it only
+        # ever grows and an older claim's token can never become current again.
+        job.lease_token += 1
         job.started_at = now
     if target in TERMINAL_STATUSES:
         job.finished_at = now

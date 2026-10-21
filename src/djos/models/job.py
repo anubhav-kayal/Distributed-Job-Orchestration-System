@@ -3,7 +3,17 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Enum, Index, String, Text, func, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    Index,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -64,6 +74,9 @@ class Job(Base):
 
     # Worker that most recently claimed the job (kept after it finishes, for debugging).
     locked_by: Mapped[str | None] = mapped_column(String(255))
+    # Fencing token: incremented on every claim and never reset. A worker remembers the
+    # token it claimed with, and its writes only apply while the job still carries it.
+    lease_token: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
 
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     last_error: Mapped[str | None] = mapped_column(Text)

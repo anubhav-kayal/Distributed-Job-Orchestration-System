@@ -13,7 +13,7 @@ from djos.models import Job, JobStatus
 
 
 def make_job(status: JobStatus = JobStatus.QUEUED) -> Job:
-    return Job(type="sleep", payload={}, status=status, attempts=0, max_attempts=3)
+    return Job(type="sleep", payload={}, status=status, attempts=0, max_attempts=3, lease_token=0)
 
 
 def test_every_status_has_transition_rules():
@@ -43,6 +43,16 @@ def test_requeue_and_rerun_counts_each_attempt():
     transition(job, JobStatus.QUEUED)
     transition(job, JobStatus.RUNNING)
     assert job.attempts == 2
+
+
+def test_every_claim_gets_a_new_fencing_token():
+    job = make_job()
+    transition(job, JobStatus.RUNNING)
+    assert job.lease_token == 1
+    transition(job, JobStatus.QUEUED)
+    assert job.lease_token == 1  # requeueing doesn't change it
+    transition(job, JobStatus.RUNNING)
+    assert job.lease_token == 2
 
 
 @pytest.mark.parametrize(

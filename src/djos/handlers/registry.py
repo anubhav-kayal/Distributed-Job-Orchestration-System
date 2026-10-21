@@ -17,6 +17,10 @@ class JobContext:
     job_id: uuid.UUID
     attempt: int  # 1 on the first run, incremented on every claim
     worker_id: str
+    # Fencing token of this run. A handler calling an external system should send job_id
+    # as its idempotency key (so a re-run doesn't apply twice) and, if the system
+    # supports it, lease_token as a fencing token (so it can reject a stale run).
+    lease_token: int = 0
 
 
 HandlerFn = Callable[[Any, JobContext], Awaitable[dict[str, Any] | None]]
