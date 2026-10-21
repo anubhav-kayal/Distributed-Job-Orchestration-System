@@ -10,7 +10,7 @@ from djos.jobs import service
 from djos.jobs.schemas import JobCreate
 from djos.models import Job, JobStatus
 from djos.worker import Worker
-from djos.worker.worker import LeaseLost
+from djos.worker.worker import LeaseLost, Outcome
 
 
 async def submit(sessionmaker, queue, seconds: float) -> uuid.UUID:
@@ -78,3 +78,30 @@ async def test_heartbeat_gives_up_after_redis_is_unreachable_for_a_ttl():
     with pytest.raises(LeaseLost, match="could not renew"):
         await worker._heartbeat(uuid.uuid4(), "me")
     assert 0.3 <= time.monotonic() - start < 0.6
+
+
+@pytest.mark.integration
+async def test_result_is_recorded_when_lease_loss_and_completion_coincide(
+    sessionmaker, queue, redis, monkeypatch
+):
+    # Handler and heartbeat both finish in the same event-loop tick, the heartbeat by
+    # raising LeaseLost. The finished result must still go through the fenced write
+    # (which accepts it here: nobody else claimed the job) instead of being dropped.
+    leases = Leases(redis, ttl_seconds=2)
+    worker = Worker(sessionmaker, queue, leases, block_seconds=0.1, heartbeat_seconds=0.1)
+    job_id = await submit(sessionmaker, queue, seconds=0)
+
+    async def instant_outcome(job):
+        return Outcome(JobStatus.SUCCEEDED, result={"done": True})
+
+    async def lease_lost_now(job_id, owner):
+        raise LeaseLost("lease expired or taken over")
+
+    monkeypatch.setattr(worker, "_invoke", instant_outcome)
+    monkeypatch.setattr(worker, "_heartbeat", lease_lost_now)
+
+    await worker.process_next()
+
+    job = await load(sessionmaker, job_id)
+    assert job.status is JobStatus.SUCCEEDED
+    assert job.result == {"done": True}

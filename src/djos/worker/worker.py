@@ -150,8 +150,10 @@ class Worker:
             log.warning("abandoning job %s: %s", job.id, exc)
             return
 
+        # The handler finished. The heartbeat may have raised LeaseLost in the same tick;
+        # either way, try to record the outcome: the fenced write decides whether it counts.
         heartbeat.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await heartbeat
         await self._finish(job.id, job.lease_token, work.result())
 
