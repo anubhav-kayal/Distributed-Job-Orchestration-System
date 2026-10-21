@@ -128,13 +128,47 @@ async def test_recently_queued_jobs_are_not_checked(sessionmaker, queue, leases,
     assert (await monitor.sweep()).reenqueued == 0
 
 
-async def test_sweep_limits_work_to_batch_size(sessionmaker, queue, leases, redis):
+async def test_stranded_check_pages_through_a_backlog_across_sweeps(
+    sessionmaker, queue, leases, redis
+):
+    # Each sweep checks one batch and continues where it left off, so jobs deep in a
+    # backlog are reached instead of the same oldest jobs being checked every sweep.
     monitor = Monitor(sessionmaker, queue, leases, stranded_after_seconds=0, batch_size=2)
     for _ in range(5):
         await submit(sessionmaker, queue)
     await redis.delete("q:normal")
 
-    assert (await monitor.sweep()).reenqueued == 2
+    per_sweep = [(await monitor.sweep()).reenqueued for _ in range(4)]
+
+    assert per_sweep == [2, 2, 1, 0]  # 4th sweep wrapped around: all present now
+    assert await redis.llen("q:normal") == 5
+
+
+async def test_reclaim_covers_more_running_jobs_than_one_batch(sessionmaker, queue, leases):
+    monitor = Monitor(sessionmaker, queue, leases, stranded_after_seconds=60, batch_size=2)
+    for i in range(5):
+        await start_and_die(sessionmaker, queue, leases, name=f"dead-{i}")
+
+    assert (await monitor.sweep()).requeued == 5
+
+
+async def test_one_failing_job_does_not_stop_the_sweep(
+    monitor, sessionmaker, queue, redis, monkeypatch
+):
+    bad, good = await submit(sessionmaker, queue), await submit(sessionmaker, queue)
+    await redis.delete("q:normal")
+    real_contains = queue.contains
+
+    async def flaky_contains(job_id, priority):
+        if job_id == bad:
+            raise RuntimeError("boom")
+        return await real_contains(job_id, priority)
+
+    monkeypatch.setattr(queue, "contains", flaky_contains)
+    result = await monitor.sweep()
+
+    assert (result.errors, result.reenqueued) == (1, 1)
+    assert await queue.contains(good, Priority.NORMAL)
 
 
 async def test_cancelled_and_finished_jobs_are_ignored(monitor, sessionmaker, queue, redis):
