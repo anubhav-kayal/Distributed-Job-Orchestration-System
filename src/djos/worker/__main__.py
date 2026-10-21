@@ -18,7 +18,9 @@ async def main() -> None:
     )
 
     engine = db.create_engine(settings.database_url)
-    redis_client = redis.create_redis(settings.redis_url)
+    redis_client = redis.create_redis(
+        settings.redis_url, socket_timeout=settings.redis_socket_timeout_seconds
+    )
     worker = Worker(
         db.create_sessionmaker(engine),
         RedisQueue(redis_client),

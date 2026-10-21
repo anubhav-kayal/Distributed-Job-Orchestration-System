@@ -18,7 +18,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         app.state.engine = db.create_engine(settings.database_url)
         app.state.sessionmaker = db.create_sessionmaker(app.state.engine)
-        app.state.redis = redis.create_redis(settings.redis_url)
+        app.state.redis = redis.create_redis(
+            settings.redis_url, socket_timeout=settings.redis_socket_timeout_seconds
+        )
         app.state.queue = RedisQueue(app.state.redis)
         try:
             yield
