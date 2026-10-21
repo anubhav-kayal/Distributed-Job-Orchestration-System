@@ -24,6 +24,7 @@ async def main() -> None:
         RedisQueue(redis_client),
         Leases(redis_client, ttl_seconds=settings.lease_ttl_seconds),
         block_seconds=settings.worker_block_seconds,
+        heartbeat_seconds=settings.heartbeat_interval_seconds,
     )
 
     # SIGTERM is what `docker stop` sends: finish the current job, then exit cleanly.

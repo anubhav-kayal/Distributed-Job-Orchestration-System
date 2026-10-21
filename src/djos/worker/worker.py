@@ -2,23 +2,24 @@
 
 Before claiming, the worker takes a lease on the job in Redis (see coordination/lease.py)
 and holds it until the outcome is recorded, so "running in Postgres" always comes with a
-live lease unless the worker died.
+live lease unless the worker died. While the handler runs, a heartbeat task renews the
+lease every `heartbeat_seconds`. If the lease is lost anyway (Redis unreachable for a
+whole TTL, or the process stalled), the worker abandons the job: the monitor will
+already be handing it to someone else.
 
-Known gaps, closed on later days:
-- A crash after popping but before claiming loses the ID from Redis. The job is still
-  `queued` in Postgres, and the monitor re-enqueues it (Day 5).
-- A crash while running leaves the job `running` until someone notices the lease is
-  gone; the monitor reclaims it (Day 5). Jobs longer than the lease TTL need
-  heartbeats to keep the lease alive (Day 5).
-- A stalled worker could finish a job someone else has re-run. Fencing tokens reject
-  its writes (Day 6).
+Known gap, closed on Day 6:
+- A worker that stalls *without noticing* (e.g. a long GC pause) can wake up after its
+  job was reclaimed and re-run, and still write its result. Fencing tokens reject it.
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import socket
+import time
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from redis.exceptions import RedisError
@@ -41,6 +42,17 @@ def default_worker_id() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
 
 
+@dataclass(frozen=True)
+class Outcome:
+    status: JobStatus
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class LeaseLost(Exception):
+    pass
+
+
 class Worker:
     def __init__(
         self,
@@ -50,12 +62,16 @@ class Worker:
         *,
         worker_id: str | None = None,
         block_seconds: float = 1.0,
+        heartbeat_seconds: float = 10.0,
     ):
+        if heartbeat_seconds * 2 > leases.ttl_ms / 1000:
+            raise ValueError("heartbeat interval must be at most half the lease TTL")
         self.sessionmaker = sessionmaker
         self.queue = queue
         self.leases = leases
         self.worker_id = worker_id or default_worker_id()
         self.block_seconds = block_seconds
+        self.heartbeat_seconds = heartbeat_seconds
 
     async def run(self, stop: asyncio.Event) -> None:
         """Process jobs until `stop` is set. A job in progress is always finished first;
@@ -89,7 +105,7 @@ class Worker:
         try:
             job = await self._claim(job_id)
             if job is not None:
-                await self._execute(job)
+                await self._run_and_record(job, owner)
         finally:
             try:
                 await self.leases.release(job_id, owner)
@@ -116,29 +132,59 @@ class Worker:
             await session.commit()
             return job
 
-    async def _execute(self, job: Job) -> None:
-        ctx = JobContext(job_id=job.id, attempt=job.attempts, worker_id=self.worker_id)
+    async def _run_and_record(self, job: Job, owner: str) -> None:
         log.info("running job %s type=%s attempt=%d", job.id, job.type, job.attempts)
+        work = asyncio.create_task(self._invoke(job))
+        heartbeat = asyncio.create_task(self._heartbeat(job.id, owner))
+        await asyncio.wait({work, heartbeat}, return_when=asyncio.FIRST_COMPLETED)
+
+        if not work.done():
+            # The heartbeat only returns by raising LeaseLost (or an unexpected error).
+            work.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await work
+            exc = heartbeat.exception()
+            log.warning("abandoning job %s: %s", job.id, exc)
+            return
+
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
+        await self._finish(job.id, work.result())
+
+    async def _invoke(self, job: Job) -> Outcome:
+        ctx = JobContext(job_id=job.id, attempt=job.attempts, worker_id=self.worker_id)
         try:
             handler = get_handler(job.type)
             payload = handler.payload_model.model_validate(job.payload)
             result = await handler.fn(payload, ctx)
         except Exception as exc:
             log.exception("job %s failed", job.id)
-            error = f"{type(exc).__name__}: {exc}"[:MAX_ERROR_LENGTH]
-            await self._finish(job.id, JobStatus.FAILED, error=error)
-        else:
-            log.info("job %s succeeded", job.id)
-            await self._finish(job.id, JobStatus.SUCCEEDED, result=result)
+            return Outcome(
+                JobStatus.FAILED, error=f"{type(exc).__name__}: {exc}"[:MAX_ERROR_LENGTH]
+            )
+        log.info("job %s succeeded", job.id)
+        return Outcome(JobStatus.SUCCEEDED, result=result)
 
-    async def _finish(
-        self,
-        job_id: uuid.UUID,
-        status: JobStatus,
-        *,
-        result: dict[str, Any] | None = None,
-        error: str | None = None,
-    ) -> None:
+    async def _heartbeat(self, job_id: uuid.UUID, owner: str) -> None:
+        """Renew the lease until cancelled. Raises LeaseLost once we can no longer be
+        sure we hold it: Redis says it's gone, or we couldn't renew for a whole TTL."""
+        ttl = self.leases.ttl_ms / 1000
+        last_renewed = time.monotonic()
+        while True:
+            await asyncio.sleep(self.heartbeat_seconds)
+            try:
+                renewed = await self.leases.renew(job_id, owner)
+            except RedisError as exc:
+                if time.monotonic() - last_renewed >= ttl:
+                    raise LeaseLost(f"could not renew for {ttl:.0f}s ({exc})") from None
+                log.warning("heartbeat for %s failed (%s); will retry", job_id, exc)
+                continue
+            if not renewed:
+                raise LeaseLost("lease expired or taken over")
+            last_renewed = time.monotonic()
+
+    async def _finish(self, job_id: uuid.UUID, outcome: Outcome) -> None:
         async with self.sessionmaker() as session:
             job = (
                 await session.scalars(select(Job).where(Job.id == job_id).with_for_update())
@@ -148,7 +194,7 @@ class Worker:
                     "job %s changed to %s while running; dropping result", job_id, job.status
                 )
                 return
-            job.result = result
-            job.last_error = error
-            transition(job, status)
+            job.result = outcome.result
+            job.last_error = outcome.error
+            transition(job, outcome.status)
             await session.commit()

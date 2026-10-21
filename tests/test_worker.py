@@ -19,7 +19,9 @@ def leases(redis) -> Leases:
 
 @pytest.fixture
 def worker(sessionmaker, queue, leases) -> Worker:
-    return Worker(sessionmaker, queue, leases, worker_id="test-worker", block_seconds=0.1)
+    return Worker(
+        sessionmaker, queue, leases, worker_id="test-worker", block_seconds=0.1, heartbeat_seconds=1
+    )
 
 
 async def submit(sessionmaker, queue, **body) -> uuid.UUID:
@@ -156,7 +158,10 @@ async def test_lease_is_held_while_the_handler_runs(worker, sessionmaker, queue,
 async def test_many_workers_claim_each_job_exactly_once(sessionmaker, queue, leases):
     job_ids = [await submit(sessionmaker, queue) for _ in range(60)]
     workers = [
-        Worker(sessionmaker, queue, leases, worker_id=f"w{i}", block_seconds=0.1) for i in range(4)
+        Worker(
+            sessionmaker, queue, leases, worker_id=f"w{i}", block_seconds=0.1, heartbeat_seconds=1
+        )
+        for i in range(4)
     ]
 
     async def drain(w: Worker) -> None:

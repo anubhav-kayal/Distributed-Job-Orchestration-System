@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     worker_block_seconds: float = 1.0
     # A worker's lease on a running job expires after this long unless renewed.
     lease_ttl_seconds: float = 30.0
+    # How often a worker renews its lease while running a job (at most half the TTL).
+    heartbeat_interval_seconds: float = 10.0
 
 
 @lru_cache
