@@ -42,6 +42,11 @@ class RedisQueue:
         _key, [job_id] = popped
         return uuid.UUID(job_id)
 
+    async def contains(self, job_id: uuid.UUID, priority: Priority) -> bool:
+        """Whether the ID is waiting in its queue. LPOS is a linear scan of the list,
+        so callers should only check a bounded number of IDs."""
+        return await self.redis.lpos(queue_key(priority), str(job_id)) is not None
+
     async def depth(self) -> dict[Priority, int]:
         async with self.redis.pipeline(transaction=False) as pipe:
             for key in QUEUE_KEYS:

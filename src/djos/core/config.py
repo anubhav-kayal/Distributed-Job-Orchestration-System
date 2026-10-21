@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     lease_ttl_seconds: float = 30.0
     # How often a worker renews its lease while running a job (at most half the TTL).
     heartbeat_interval_seconds: float = 10.0
+    # Monitor: how often it sweeps, how long a job may sit `queued` before we check that
+    # its ID is really in Redis, and how many jobs each sweep looks at.
+    monitor_interval_seconds: float = 5.0
+    stranded_after_seconds: float = 30.0
+    monitor_batch_size: int = 100
 
 
 @lru_cache
