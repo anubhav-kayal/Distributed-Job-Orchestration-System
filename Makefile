@@ -1,4 +1,4 @@
-.PHONY: up down logs test test-unit lint fmt migrate demo-crash demo-pause verify chaos
+.PHONY: up down logs test test-unit lint fmt migrate demo-crash demo-pause verify chaos verify-cron
 
 WORKERS ?= 3
 # Short timings so crashes are detected and reclaimed within seconds (used by chaos/demos).
@@ -11,7 +11,7 @@ down:
 	docker compose down
 
 logs:
-	docker compose logs -f worker monitor
+	docker compose logs -f worker monitor scheduler
 
 test:  ## all tests (needs Postgres + Redis: make up, or docker compose up -d postgres redis)
 	uv run pytest
@@ -41,3 +41,6 @@ chaos:  ## same, while SIGKILLing a random worker every 4s
 	$(FAST) docker compose up -d --build --wait --scale worker=$(WORKERS)
 	uv run python scripts/verify_exactly_once.py --jobs 1000 --workers $(WORKERS) --kill-every 4 --timeout 600
 	docker compose up -d --wait --scale worker=$(WORKERS)
+
+verify-cron:  ## every-minute cron with 2 scheduler replicas: exactly one job per minute
+	./scripts/verify_cron.sh 3
