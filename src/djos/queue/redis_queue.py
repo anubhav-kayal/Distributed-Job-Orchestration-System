@@ -2,7 +2,9 @@
 
 One list per priority tier. Producers LPUSH onto the left; consumers pop from the right,
 so each tier is FIFO. BLMPOP checks the keys in the order given and pops from the first
-non-empty one, which gives strict priority: `high` before `normal` before `low`.
+non-empty one, which gives strict priority: `high` before `normal` before `low`. Workers
+pass a preferred tier from a weighted rotation (see fairness.py) so low priority still
+gets a share under load.
 
 Redis only carries job IDs, never job state. Postgres decides whether a popped ID is still
 runnable, so a duplicate or stale ID in a queue is harmless (the worker skips it).
@@ -32,11 +34,18 @@ class RedisQueue:
     async def enqueue(self, job_id: uuid.UUID, priority: Priority) -> None:
         await self.redis.lpush(queue_key(priority), str(job_id))
 
-    async def dequeue(self, block_seconds: float) -> uuid.UUID | None:
-        """Block up to `block_seconds` (server-side) for the next job ID; None if none arrives."""
-        popped = await self.redis.blmpop(
-            block_seconds, len(QUEUE_KEYS), *QUEUE_KEYS, direction="RIGHT"
-        )
+    async def dequeue(
+        self, block_seconds: float, prefer: Priority | None = None
+    ) -> uuid.UUID | None:
+        """Block up to `block_seconds` (server-side) for the next job ID; None if none arrives.
+
+        Tiers are tried in priority order, except that `prefer` (if given) is tried first.
+        """
+        order = PRIORITY_ORDER
+        if prefer is not None:
+            order = (prefer, *(p for p in PRIORITY_ORDER if p is not prefer))
+        keys = [queue_key(p) for p in order]
+        popped = await self.redis.blmpop(block_seconds, len(keys), *keys, direction="RIGHT")
         if popped is None:
             return None
         _key, [job_id] = popped

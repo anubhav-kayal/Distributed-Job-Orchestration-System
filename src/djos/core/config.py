@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     # Retry backoff after a failed attempt: random in [0, min(cap, base * 2^(attempt-1))].
     retry_base_seconds: float = 1.0
     retry_cap_seconds: float = 300.0
+    # Share of pops each priority tier is guaranteed under contention (see queue/fairness.py).
+    priority_weight_high: int = Field(default=6, ge=1)
+    priority_weight_normal: int = Field(default=3, ge=1)
+    priority_weight_low: int = Field(default=1, ge=1)
     # Scheduler: how often it looks for due jobs, and how many it promotes per query.
     scheduler_interval_seconds: float = 0.5
     scheduler_batch_size: int = 100

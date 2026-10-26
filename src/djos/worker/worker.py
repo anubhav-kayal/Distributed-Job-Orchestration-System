@@ -35,8 +35,8 @@ from djos.coordination import Leases
 from djos.handlers import JobContext, PermanentError, UnknownJobType, get_handler
 from djos.jobs.retry import RetryPolicy
 from djos.jobs.states import transition
-from djos.models import Effect, Job, JobStatus
-from djos.queue import RedisQueue
+from djos.models import Effect, Job, JobStatus, Priority
+from djos.queue import RedisQueue, WeightedRotation
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +78,7 @@ class Worker:
         block_seconds: float = 1.0,
         heartbeat_seconds: float = 10.0,
         retry_policy: RetryPolicy | None = None,
+        priority_weights: dict[Priority, int] | None = None,
     ):
         if heartbeat_seconds * 2 > leases.ttl_ms / 1000:
             raise ValueError("heartbeat interval must be at most half the lease TTL")
@@ -88,6 +89,7 @@ class Worker:
         self.block_seconds = block_seconds
         self.heartbeat_seconds = heartbeat_seconds
         self.retry_policy = retry_policy or RetryPolicy()
+        self.rotation = WeightedRotation(priority_weights)
 
     async def run(self, stop: asyncio.Event) -> None:
         """Process jobs until `stop` is set. A job in progress is always finished first;
@@ -108,7 +110,9 @@ class Worker:
 
     async def process_next(self) -> bool:
         """Pop and process one job. Returns False if the queue stayed empty."""
-        job_id = await self.queue.dequeue(block_seconds=self.block_seconds)
+        job_id = await self.queue.dequeue(
+            block_seconds=self.block_seconds, prefer=self.rotation.next()
+        )
         if job_id is None:
             return False
 
