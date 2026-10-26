@@ -118,6 +118,47 @@ async def cancel_job(session: AsyncSession, job_id: uuid.UUID) -> Job:
     ).one_or_none()
     if job is None:
         raise JobNotFound(job_id)
-    transition(job, JobStatus.CANCELLED)  # raises InvalidTransition unless still queued
+    transition(job, JobStatus.CANCELLED)  # InvalidTransition unless queued or scheduled
     await session.commit()
+    return job
+
+
+async def list_dead_jobs(
+    session: AsyncSession, *, job_type: str | None, limit: int, offset: int
+) -> list[Job]:
+    """The dead-letter queue: most recently died first."""
+    stmt = (
+        select(Job)
+        .where(Job.status == JobStatus.DEAD)
+        .order_by(Job.finished_at.desc(), Job.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    if job_type is not None:
+        stmt = stmt.where(Job.type == job_type)
+    return list(await session.scalars(stmt))
+
+
+async def retry_dead_job(session: AsyncSession, queue: RedisQueue, job_id: uuid.UUID) -> Job:
+    """Give a dead job a fresh set of attempts and put it back in the queue.
+
+    attempts resets to 0, but lease_token is left alone: it must keep growing, or a
+    worker still holding a token from before the job died could become "current" again.
+    last_error is kept so the reason it died stays visible until the next run.
+    """
+    job = (
+        await session.scalars(select(Job).where(Job.id == job_id).with_for_update())
+    ).one_or_none()
+    if job is None:
+        raise JobNotFound(job_id)
+    transition(job, JobStatus.QUEUED)  # InvalidTransition unless dead
+    job.attempts = 0
+    job.result = None
+    job.run_at = None
+    await session.commit()
+    try:
+        await queue.enqueue(job.id, job.priority)
+    except RedisError:
+        log.warning("enqueue failed; retried job %s is queued but not yet in Redis", job.id)
+    log.info("dead job %s retried from the DLQ", job.id)
     return job

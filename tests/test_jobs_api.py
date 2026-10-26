@@ -2,7 +2,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-import redis as sync_redis
 from fastapi.testclient import TestClient
 
 from djos.api.main import create_app
@@ -115,12 +114,6 @@ def test_cancel_twice_is_409(client):
 
 def test_cancel_unknown_job_is_404(client):
     assert client.post(f"/jobs/{uuid.uuid4()}/cancel").status_code == 404
-
-
-@pytest.fixture
-def redis_sync(test_settings):
-    with sync_redis.Redis.from_url(test_settings.redis_url, decode_responses=True) as r:
-        yield r
 
 
 def test_submit_pushes_job_id_onto_its_priority_queue(client, redis_sync):

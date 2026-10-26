@@ -69,6 +69,12 @@ def client(test_settings: Settings, clean_state: None) -> Iterator[TestClient]:
 
 
 @pytest.fixture
+def redis_sync(test_settings: Settings, clean_state: None) -> Iterator[sync_redis.Redis]:
+    with sync_redis.Redis.from_url(test_settings.redis_url, decode_responses=True) as r:
+        yield r
+
+
+@pytest.fixture
 async def redis(test_settings: Settings, clean_state: None) -> AsyncIterator[Redis]:
     client = Redis.from_url(test_settings.redis_url, decode_responses=True)
     yield client
