@@ -6,6 +6,7 @@ x-djos-env: &djos-env
   DJOS_LEASE_TTL_SECONDS: ${DJOS_LEASE_TTL_SECONDS:-30}
   DJOS_HEARTBEAT_INTERVAL_SECONDS: ${DJOS_HEARTBEAT_INTERVAL_SECONDS:-10}
   DJOS_MONITOR_INTERVAL_SECONDS: ${DJOS_MONITOR_INTERVAL_SECONDS:-5}
+  DJOS_RETRY_BASE_SECONDS: ${DJOS_RETRY_BASE_SECONDS:-1}
 
 services:
   postgres:
@@ -67,6 +68,16 @@ services:
     environment: *djos-env
     # Give an in-flight job time to finish after SIGTERM before Docker sends SIGKILL.
     stop_grace_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  scheduler:
+    image: djos:local
+    command: ["python", "-m", "djos.scheduler"]
+    environment: *djos-env
     depends_on:
       migrate:
         condition: service_completed_successfully
