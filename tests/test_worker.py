@@ -50,8 +50,10 @@ async def test_runs_job_to_success(worker, sessionmaker, queue):
     assert job.started_at <= job.finished_at
 
 
-async def test_handler_exception_marks_job_failed(worker, sessionmaker, queue):
-    job_id = await submit(sessionmaker, queue, type="flaky", payload={"fail_times": 1})
+async def test_handler_exception_on_last_attempt_marks_job_failed(worker, sessionmaker, queue):
+    job_id = await submit(
+        sessionmaker, queue, type="flaky", payload={"fail_times": 1}, max_attempts=1
+    )
 
     await worker.process_next()
 

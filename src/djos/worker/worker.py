@@ -23,14 +23,17 @@ import socket
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from pydantic import ValidationError
 from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from djos.coordination import Leases
-from djos.handlers import JobContext, get_handler
+from djos.handlers import JobContext, PermanentError, UnknownJobType, get_handler
+from djos.jobs.retry import RetryPolicy
 from djos.jobs.states import transition
 from djos.models import Effect, Job, JobStatus
 from djos.queue import RedisQueue
@@ -40,6 +43,10 @@ log = logging.getLogger(__name__)
 MAX_ERROR_LENGTH = 4000
 
 
+def _describe(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"[:MAX_ERROR_LENGTH]
+
+
 def default_worker_id() -> str:
     # In a container the hostname is the container ID, so this is unique per replica.
     return f"{socket.gethostname()}-{os.getpid()}"
@@ -47,9 +54,10 @@ def default_worker_id() -> str:
 
 @dataclass(frozen=True)
 class Outcome:
-    status: JobStatus
+    status: JobStatus  # SUCCEEDED or FAILED; _finish turns a retryable FAILED into a retry
     result: dict[str, Any] | None = None
     error: str | None = None
+    retryable: bool = True
 
 
 class LeaseLost(Exception):
@@ -66,6 +74,7 @@ class Worker:
         worker_id: str | None = None,
         block_seconds: float = 1.0,
         heartbeat_seconds: float = 10.0,
+        retry_policy: RetryPolicy | None = None,
     ):
         if heartbeat_seconds * 2 > leases.ttl_ms / 1000:
             raise ValueError("heartbeat interval must be at most half the lease TTL")
@@ -75,6 +84,7 @@ class Worker:
         self.worker_id = worker_id or default_worker_id()
         self.block_seconds = block_seconds
         self.heartbeat_seconds = heartbeat_seconds
+        self.retry_policy = retry_policy or RetryPolicy()
 
     async def run(self, stop: asyncio.Event) -> None:
         """Process jobs until `stop` is set. A job in progress is always finished first;
@@ -165,14 +175,20 @@ class Worker:
             lease_token=job.lease_token,
         )
         try:
+            # An unknown type or a payload that no longer validates won't fix itself.
             handler = get_handler(job.type)
             payload = handler.payload_model.model_validate(job.payload)
+        except (UnknownJobType, ValidationError) as exc:
+            log.error("job %s can never run: %s", job.id, exc)
+            return Outcome(JobStatus.FAILED, error=_describe(exc), retryable=False)
+        try:
             result = await handler.fn(payload, ctx)
+        except PermanentError as exc:
+            log.warning("job %s failed permanently: %s", job.id, exc)
+            return Outcome(JobStatus.FAILED, error=_describe(exc), retryable=False)
         except Exception as exc:
             log.exception("job %s failed", job.id)
-            return Outcome(
-                JobStatus.FAILED, error=f"{type(exc).__name__}: {exc}"[:MAX_ERROR_LENGTH]
-            )
+            return Outcome(JobStatus.FAILED, error=_describe(exc))
         log.info("job %s succeeded", job.id)
         return Outcome(JobStatus.SUCCEEDED, result=result)
 
@@ -213,7 +229,23 @@ class Worker:
                 return False
             job.result = outcome.result
             job.last_error = outcome.error
-            transition(job, outcome.status)
+            if (
+                outcome.status is JobStatus.FAILED
+                and outcome.retryable
+                and job.attempts < job.max_attempts
+            ):
+                delay = self.retry_policy.delay(job.attempts)
+                job.run_at = datetime.now(UTC) + timedelta(seconds=delay)
+                transition(job, JobStatus.SCHEDULED)
+                log.info(
+                    "job %s will retry in %.2fs (attempt %d of %d failed)",
+                    job_id,
+                    delay,
+                    job.attempts,
+                    job.max_attempts,
+                )
+            else:
+                transition(job, outcome.status)
             if outcome.status is JobStatus.SUCCEEDED:
                 # Same transaction as the status change: the effect exists if and only if
                 # this claim's success was recorded.

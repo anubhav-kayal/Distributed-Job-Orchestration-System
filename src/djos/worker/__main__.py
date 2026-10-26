@@ -7,6 +7,7 @@ import signal
 from djos.coordination import Leases
 from djos.core import db, redis
 from djos.core.config import get_settings
+from djos.jobs.retry import RetryPolicy
 from djos.queue import RedisQueue
 from djos.worker import Worker
 
@@ -27,6 +28,7 @@ async def main() -> None:
         Leases(redis_client, ttl_seconds=settings.lease_ttl_seconds),
         block_seconds=settings.worker_block_seconds,
         heartbeat_seconds=settings.heartbeat_interval_seconds,
+        retry_policy=RetryPolicy(settings.retry_base_seconds, settings.retry_cap_seconds),
     )
 
     # SIGTERM is what `docker stop` sends: finish the current job, then exit cleanly.

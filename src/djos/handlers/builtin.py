@@ -8,7 +8,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from djos.handlers.registry import JobContext, handler
+from djos.handlers.registry import JobContext, PermanentError, handler
 
 
 class _Payload(BaseModel):
@@ -69,3 +69,16 @@ async def flaky(payload: FlakyPayload, ctx: JobContext) -> dict:
     if ctx.attempt <= payload.fail_times:
         raise RuntimeError(f"flaky failure on attempt {ctx.attempt} of {payload.fail_times}")
     return {"succeeded_on_attempt": ctx.attempt}
+
+
+class FailPayload(_Payload):
+    message: str = Field(default="always fails", max_length=1000)
+    permanent: bool = False
+
+
+@handler("fail", FailPayload)
+async def fail(payload: FailPayload, ctx: JobContext) -> dict:
+    """Always fails: retryably (uses up its attempts), or permanently (no retries)."""
+    if payload.permanent:
+        raise PermanentError(payload.message)
+    raise RuntimeError(payload.message)

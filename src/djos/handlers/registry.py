@@ -37,6 +37,11 @@ class UnknownJobType(LookupError):
     pass
 
 
+class PermanentError(Exception):
+    """Raise from a handler when retrying can't help (bad input, a 4xx from an API, a
+    record that no longer exists). The job fails immediately instead of retrying."""
+
+
 _REGISTRY: dict[str, Handler] = {}
 
 

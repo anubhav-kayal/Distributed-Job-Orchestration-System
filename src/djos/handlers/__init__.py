@@ -2,6 +2,7 @@ from djos.handlers import builtin  # noqa: F401  (registers the built-in handler
 from djos.handlers.registry import (
     Handler,
     JobContext,
+    PermanentError,
     UnknownJobType,
     get_handler,
     handler,
@@ -11,6 +12,7 @@ from djos.handlers.registry import (
 __all__ = [
     "Handler",
     "JobContext",
+    "PermanentError",
     "UnknownJobType",
     "get_handler",
     "handler",
