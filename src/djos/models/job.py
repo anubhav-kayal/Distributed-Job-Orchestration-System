@@ -21,6 +21,7 @@ from djos.models.base import Base
 
 
 class JobStatus(StrEnum):
+    SCHEDULED = "scheduled"  # waiting until run_at (a retry backoff, or submitted for later)
     QUEUED = "queued"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
@@ -64,6 +65,9 @@ class Job(Base):
         _string_enum(JobStatus, 20), server_default=JobStatus.QUEUED.value
     )
 
+    # When a `scheduled` job becomes runnable; the scheduler promotes it to `queued` then.
+    run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     attempts: Mapped[int] = mapped_column(server_default=text("0"))
     max_attempts: Mapped[int] = mapped_column(server_default=text("3"))
 
@@ -94,6 +98,8 @@ class Job(Base):
         CheckConstraint("max_attempts >= 1", name="max_attempts_positive"),
         CheckConstraint("attempts >= 0", name="attempts_non_negative"),
         Index("ix_jobs_status_created_at", "status", "created_at"),
+        # The scheduler's query: scheduled jobs whose run_at has passed.
+        Index("ix_jobs_status_run_at", "status", "run_at"),
     )
     # Fetch DB-generated values (updated_at = now()) via RETURNING on INSERT/UPDATE.
     # Without this they'd be lazily reloaded on access, which async sessions can't do.

@@ -3,10 +3,11 @@
 Every status change in the system goes through `transition()`, so the allowed lifecycle
 lives in exactly one place:
 
-    queued ──► running ──► succeeded
-      │          │  └────► failed
-      │          └───────► queued      (lease expired / retry: run it again)
-      └──────────────────► cancelled
+    scheduled ──► queued ──► running ──► succeeded
+        │  ▲          │          │  └────► failed
+        │  │          │          ├───────► queued      (lease expired: reclaimed)
+        │  └──────────┼──────────┘                     (failed, attempts left: retry later)
+        └─────────────┴──────────────────► cancelled
 """
 
 from datetime import UTC, datetime
@@ -14,8 +15,11 @@ from datetime import UTC, datetime
 from djos.models import Job, JobStatus
 
 ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
+    JobStatus.SCHEDULED: frozenset({JobStatus.QUEUED, JobStatus.CANCELLED}),
     JobStatus.QUEUED: frozenset({JobStatus.RUNNING, JobStatus.CANCELLED}),
-    JobStatus.RUNNING: frozenset({JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.QUEUED}),
+    JobStatus.RUNNING: frozenset(
+        {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.QUEUED, JobStatus.SCHEDULED}
+    ),
     JobStatus.SUCCEEDED: frozenset(),
     JobStatus.FAILED: frozenset(),
     JobStatus.CANCELLED: frozenset(),

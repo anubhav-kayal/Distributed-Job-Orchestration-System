@@ -71,3 +71,18 @@ def test_disallowed_transitions_raise_and_leave_job_untouched(current, target):
 def test_terminal_statuses_cannot_be_left(status):
     for target in JobStatus:
         assert not can_transition(status, target)
+
+
+def test_failed_run_can_wait_for_a_retry_then_run_again():
+    job = make_job()
+    transition(job, JobStatus.RUNNING)
+    transition(job, JobStatus.SCHEDULED)  # failed with attempts left: retry later
+    transition(job, JobStatus.QUEUED)  # the scheduler promotes it when due
+    transition(job, JobStatus.RUNNING)
+    assert (job.attempts, job.lease_token) == (2, 2)
+
+
+def test_scheduled_job_can_be_cancelled():
+    job = make_job(JobStatus.SCHEDULED)
+    transition(job, JobStatus.CANCELLED)
+    assert job.finished_at is not None

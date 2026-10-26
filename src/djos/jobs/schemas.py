@@ -50,6 +50,7 @@ class JobOut(BaseModel):
     idempotency_key: str | None
     locked_by: str | None
     lease_token: int
+    run_at: datetime | None
     result: dict[str, Any] | None
     last_error: str | None
     created_at: datetime
