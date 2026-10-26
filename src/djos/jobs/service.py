@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from redis.exceptions import RedisError
 from sqlalchemy import select
@@ -24,9 +25,51 @@ class IdempotencyKeyReused(Exception):
     """The same Idempotency-Key was sent with a different request body."""
 
 
+# Optional fields added after launch. Left out of the fingerprint when unset, so adding
+# them didn't change the fingerprint of any existing request: replaying an old
+# Idempotency-Key with the same body must still match.
+_LATER_OPTIONAL_FIELDS = ("run_at", "delay_seconds")
+
+
 def request_fingerprint(data: JobCreate) -> str:
-    canonical = json.dumps(data.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    body = data.model_dump(mode="json")
+    for field in _LATER_OPTIONAL_FIELDS:
+        if body.get(field) is None:
+            body.pop(field, None)
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+async def insert_job(
+    session: AsyncSession,
+    data: JobCreate,
+    idempotency_key: str | None = None,
+    *,
+    now: datetime | None = None,
+) -> Job | None:
+    """INSERT the job without committing; None if the Idempotency-Key already exists.
+
+    A job whose first run is in the future starts as `scheduled`; the scheduler promotes
+    it when it's due. Doesn't commit, so callers can include it in a larger transaction.
+    """
+    now = now or datetime.now(UTC)
+    run_at = data.resolve_run_at(now)
+    stmt = (
+        insert(Job)
+        .values(
+            type=data.type,
+            payload=data.payload,
+            priority=data.priority,
+            max_attempts=data.max_attempts,
+            status=JobStatus.SCHEDULED if run_at and run_at > now else JobStatus.QUEUED,
+            run_at=run_at,
+            idempotency_key=idempotency_key,
+            request_hash=request_fingerprint(data) if idempotency_key else None,
+        )
+        .on_conflict_do_nothing(index_elements=[Job.idempotency_key])
+        .returning(Job)
+    )
+    return (await session.scalars(stmt)).one_or_none()
 
 
 async def create_job(
@@ -40,20 +83,7 @@ async def create_job(
     requests see "missing" and create two jobs.
     """
     fingerprint = request_fingerprint(data)
-    stmt = (
-        insert(Job)
-        .values(
-            type=data.type,
-            payload=data.payload,
-            priority=data.priority,
-            max_attempts=data.max_attempts,
-            idempotency_key=idempotency_key,
-            request_hash=fingerprint if idempotency_key else None,
-        )
-        .on_conflict_do_nothing(index_elements=[Job.idempotency_key])
-        .returning(Job)
-    )
-    job = (await session.scalars(stmt)).one_or_none()
+    job = await insert_job(session, data, idempotency_key)
     if job is not None:
         await session.commit()
         return job, True

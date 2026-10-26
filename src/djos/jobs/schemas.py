@@ -1,11 +1,20 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from djos.handlers import UnknownJobType, get_handler, registered_types
 from djos.models import JobStatus, Priority
+
+MAX_DELAY_SECONDS = 365 * 24 * 3600
 
 
 class JobCreate(BaseModel):
@@ -15,6 +24,21 @@ class JobCreate(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     priority: Priority = Priority.NORMAL
     max_attempts: int = Field(default=3, ge=1, le=25)
+    # Run later: an absolute time (must include a timezone) or a delay. At most one.
+    run_at: AwareDatetime | None = None
+    delay_seconds: float | None = Field(default=None, ge=0, le=MAX_DELAY_SECONDS)
+
+    def resolve_run_at(self, now: datetime) -> datetime | None:
+        """When the job should first run, or None for "as soon as possible"."""
+        if self.delay_seconds is not None:
+            return now + timedelta(seconds=self.delay_seconds)
+        return self.run_at
+
+    @model_validator(mode="after")
+    def check_schedule(self) -> "JobCreate":
+        if self.run_at is not None and self.delay_seconds is not None:
+            raise ValueError("give either run_at or delay_seconds, not both")
+        return self
 
     @model_validator(mode="after")
     def validate_payload_for_type(self) -> "JobCreate":
