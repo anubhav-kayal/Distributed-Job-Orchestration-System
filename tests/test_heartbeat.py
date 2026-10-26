@@ -92,7 +92,7 @@ async def test_result_is_recorded_when_lease_loss_and_completion_coincide(
     job_id = await submit(sessionmaker, queue, seconds=0)
 
     async def instant_outcome(job):
-        return Outcome(JobStatus.SUCCEEDED, result={"done": True})
+        return Outcome(True, result={"done": True})
 
     async def lease_lost_now(job_id, owner):
         raise LeaseLost("lease expired or taken over")

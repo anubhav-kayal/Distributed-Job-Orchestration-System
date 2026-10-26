@@ -71,7 +71,7 @@ async def test_out_of_attempts_fails_for_good(worker, sessionmaker, queue):
     await worker.process_next()
 
     job = await load(sessionmaker, job_id)
-    assert (job.status, job.attempts) == (JobStatus.FAILED, 2)
+    assert (job.status, job.attempts) == (JobStatus.DEAD, 2)
     assert job.finished_at is not None
 
 
@@ -83,7 +83,7 @@ async def test_permanent_error_is_not_retried(worker, sessionmaker, queue):
     await worker.process_next()
 
     job = await load(sessionmaker, job_id)
-    assert (job.status, job.attempts) == (JobStatus.FAILED, 1)  # 2 attempts left, unused
+    assert (job.status, job.attempts) == (JobStatus.DEAD, 1)  # 2 attempts left, unused
     assert job.last_error == "PermanentError: bad input"
 
 
@@ -96,7 +96,7 @@ async def test_unknown_job_type_is_not_retried(worker, sessionmaker, queue):
     await worker.process_next()
 
     job = await load(sessionmaker, job_id)
-    assert (job.status, job.attempts) == (JobStatus.FAILED, 1)
+    assert (job.status, job.attempts) == (JobStatus.DEAD, 1)
     assert job.last_error.startswith("UnknownJobType")
 
 

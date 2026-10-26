@@ -34,7 +34,7 @@ while :; do
   body=$(job "$id")
   line="status=$(echo "$body" | field status) attempts=$(echo "$body" | field attempts) worker=$(echo "$body" | field locked_by)"
   if [ "$line" != "$last" ]; then echo "  +$(( $(date +%s) - start ))s  $line"; last=$line; fi
-  case $(echo "$body" | field status) in succeeded|failed) break ;; esac
+  case $(echo "$body" | field status) in succeeded|dead) break ;; esac
   if [ $(( $(date +%s) - start )) -gt 60 ]; then echo "timed out"; exit 1; fi
   sleep 1
 done

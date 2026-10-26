@@ -25,7 +25,7 @@ class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
-    FAILED = "failed"
+    DEAD = "dead"  # out of attempts, or failed permanently: parked in the dead-letter queue
     CANCELLED = "cancelled"
 
 

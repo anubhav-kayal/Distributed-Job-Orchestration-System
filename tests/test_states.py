@@ -21,7 +21,7 @@ def test_every_status_has_transition_rules():
 
 
 def test_terminal_statuses():
-    assert TERMINAL_STATUSES == {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED}
+    assert TERMINAL_STATUSES == {JobStatus.SUCCEEDED, JobStatus.DEAD, JobStatus.CANCELLED}
 
 
 def test_happy_path_sets_attempts_and_timestamps():
@@ -67,10 +67,23 @@ def test_disallowed_transitions_raise_and_leave_job_untouched(current, target):
     assert job.attempts == 0
 
 
-@pytest.mark.parametrize("status", sorted(TERMINAL_STATUSES))
-def test_terminal_statuses_cannot_be_left(status):
+@pytest.mark.parametrize("status", [JobStatus.SUCCEEDED, JobStatus.CANCELLED])
+def test_succeeded_and_cancelled_can_never_be_left(status):
     for target in JobStatus:
         assert not can_transition(status, target)
+
+
+def test_dead_can_only_go_back_to_queued():
+    assert {t for t in JobStatus if can_transition(JobStatus.DEAD, t)} == {JobStatus.QUEUED}
+
+
+def test_retrying_from_the_dlq_clears_finished_at():
+    job = make_job()
+    transition(job, JobStatus.RUNNING)
+    transition(job, JobStatus.DEAD)
+    assert job.finished_at is not None
+    transition(job, JobStatus.QUEUED)
+    assert job.finished_at is None
 
 
 def test_failed_run_can_wait_for_a_retry_then_run_again():

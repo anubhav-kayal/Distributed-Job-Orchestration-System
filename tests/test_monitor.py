@@ -81,9 +81,9 @@ async def test_orphan_with_no_attempts_left_fails(monitor, sessionmaker, queue, 
 
     result = await monitor.sweep()
 
-    assert result.failed == 1
+    assert result.dead == 1
     job = await load(sessionmaker, job_id)
-    assert job.status is JobStatus.FAILED
+    assert job.status is JobStatus.DEAD
     assert job.last_error.endswith("no attempts left")
     assert not await queue.contains(job_id, Priority.NORMAL)
 
@@ -182,4 +182,4 @@ async def test_cancelled_and_finished_jobs_are_ignored(monitor, sessionmaker, qu
 
     result = await monitor.sweep()
 
-    assert (result.requeued, result.failed, result.reenqueued) == (0, 0, 0)
+    assert (result.requeued, result.dead, result.reenqueued) == (0, 0, 0)

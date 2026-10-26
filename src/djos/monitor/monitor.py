@@ -4,7 +4,7 @@ Two sweeps, both driven from Postgres (the source of truth):
 
 1. Orphan reclaim. A job that is `running` in Postgres but has no lease in Redis lost
    its worker (crash, kill -9, OOM, lost network). It goes back to `queued` and is
-   re-enqueued, or to `failed` once it has used up `max_attempts`, so a job that keeps
+   re-enqueued, or to `dead` once it has used up `max_attempts`, so a job that keeps
    killing workers can't loop forever.
 
 2. Stranded re-enqueue. A job that has been `queued` for a while but whose ID is not in
@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class SweepResult:
     requeued: int = 0  # orphans put back in the queue
-    failed: int = 0  # orphans that had no attempts left
+    dead: int = 0  # orphans that had no attempts left
     reenqueued: int = 0  # stranded queued jobs pushed to Redis again
     errors: int = 0  # jobs skipped this sweep because something failed
 
@@ -74,7 +74,7 @@ class Monitor:
         while not stop.is_set():
             try:
                 result = await self.sweep()
-                if result.requeued or result.failed or result.reenqueued or result.errors:
+                if result.requeued or result.dead or result.reenqueued or result.errors:
                     log.info("sweep: %s", result)
             except RedisError as exc:
                 log.warning("redis unavailable (%s); will retry", exc)
@@ -136,8 +136,8 @@ class Monitor:
             )
             if job.attempts >= job.max_attempts:
                 job.last_error = f"{reason}; no attempts left"
-                transition(job, JobStatus.FAILED)
-                result.failed += 1
+                transition(job, JobStatus.DEAD)
+                result.dead += 1
             else:
                 job.last_error = f"{reason}; requeued"
                 transition(job, JobStatus.QUEUED)

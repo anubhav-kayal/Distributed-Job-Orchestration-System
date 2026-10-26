@@ -58,7 +58,7 @@ async def test_handler_exception_on_last_attempt_marks_job_failed(worker, sessio
     await worker.process_next()
 
     job = await load(sessionmaker, job_id)
-    assert job.status is JobStatus.FAILED
+    assert job.status is JobStatus.DEAD
     assert job.last_error == "RuntimeError: flaky failure on attempt 1 of 1"
     assert job.result is None
     assert job.finished_at is not None

@@ -25,7 +25,7 @@ from sqlalchemy import text
 from djos.core import db
 from djos.core.config import get_settings
 
-TERMINAL = ("succeeded", "failed", "cancelled")
+TERMINAL = ("succeeded", "dead", "cancelled")
 
 
 def compose(*args: str) -> str:

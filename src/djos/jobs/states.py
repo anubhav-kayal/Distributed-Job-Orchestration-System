@@ -4,10 +4,13 @@ Every status change in the system goes through `transition()`, so the allowed li
 lives in exactly one place:
 
     scheduled ──► queued ──► running ──► succeeded
-        │  ▲          │          │  └────► failed
-        │  │          │          ├───────► queued      (lease expired: reclaimed)
-        │  └──────────┼──────────┘                     (failed, attempts left: retry later)
+        │  ▲          │ ▲        │  └────► dead        (out of attempts / permanent error)
+        │  │          │ │        ├───────► queued      (lease expired: reclaimed)
+        │  └──────────┼─┼────────┘                     (failed, attempts left: retry later)
+        │             │ └─────────────── dead          (manual retry from the DLQ)
         └─────────────┴──────────────────► cancelled
+
+`dead` is final for the system: only an operator's DLQ retry moves a job out of it.
 """
 
 from datetime import UTC, datetime
@@ -18,14 +21,16 @@ ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.SCHEDULED: frozenset({JobStatus.QUEUED, JobStatus.CANCELLED}),
     JobStatus.QUEUED: frozenset({JobStatus.RUNNING, JobStatus.CANCELLED}),
     JobStatus.RUNNING: frozenset(
-        {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.QUEUED, JobStatus.SCHEDULED}
+        {JobStatus.SUCCEEDED, JobStatus.DEAD, JobStatus.QUEUED, JobStatus.SCHEDULED}
     ),
     JobStatus.SUCCEEDED: frozenset(),
-    JobStatus.FAILED: frozenset(),
+    JobStatus.DEAD: frozenset({JobStatus.QUEUED}),
     JobStatus.CANCELLED: frozenset(),
 }
 
-TERMINAL_STATUSES = frozenset(s for s, targets in ALLOWED_TRANSITIONS.items() if not targets)
+# Finished from the system's point of view (finished_at is set). `dead` is included even
+# though an operator can retry it from the DLQ.
+TERMINAL_STATUSES = frozenset({JobStatus.SUCCEEDED, JobStatus.DEAD, JobStatus.CANCELLED})
 
 
 class InvalidTransition(Exception):
@@ -54,4 +59,6 @@ def transition(job: Job, target: JobStatus, *, now: datetime | None = None) -> N
         job.started_at = now
     if target in TERMINAL_STATUSES:
         job.finished_at = now
+    elif job.status in TERMINAL_STATUSES:
+        job.finished_at = None  # leaving the DLQ: it isn't finished any more
     job.status = target

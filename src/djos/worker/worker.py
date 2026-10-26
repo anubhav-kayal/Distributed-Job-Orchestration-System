@@ -54,7 +54,10 @@ def default_worker_id() -> str:
 
 @dataclass(frozen=True)
 class Outcome:
-    status: JobStatus  # SUCCEEDED or FAILED; _finish turns a retryable FAILED into a retry
+    """What one run of the handler produced. _finish decides the job's next status:
+    succeeded, scheduled (retry later) or dead."""
+
+    succeeded: bool
     result: dict[str, Any] | None = None
     error: str | None = None
     retryable: bool = True
@@ -180,17 +183,17 @@ class Worker:
             payload = handler.payload_model.model_validate(job.payload)
         except (UnknownJobType, ValidationError) as exc:
             log.error("job %s can never run: %s", job.id, exc)
-            return Outcome(JobStatus.FAILED, error=_describe(exc), retryable=False)
+            return Outcome(False, error=_describe(exc), retryable=False)
         try:
             result = await handler.fn(payload, ctx)
         except PermanentError as exc:
             log.warning("job %s failed permanently: %s", job.id, exc)
-            return Outcome(JobStatus.FAILED, error=_describe(exc), retryable=False)
+            return Outcome(False, error=_describe(exc), retryable=False)
         except Exception as exc:
             log.exception("job %s failed", job.id)
-            return Outcome(JobStatus.FAILED, error=_describe(exc))
+            return Outcome(False, error=_describe(exc))
         log.info("job %s succeeded", job.id)
-        return Outcome(JobStatus.SUCCEEDED, result=result)
+        return Outcome(True, result=result)
 
     async def _heartbeat(self, job_id: uuid.UUID, owner: str) -> None:
         """Renew the lease until cancelled. Raises LeaseLost once we can no longer be
@@ -229,11 +232,9 @@ class Worker:
                 return False
             job.result = outcome.result
             job.last_error = outcome.error
-            if (
-                outcome.status is JobStatus.FAILED
-                and outcome.retryable
-                and job.attempts < job.max_attempts
-            ):
+            if outcome.succeeded:
+                transition(job, JobStatus.SUCCEEDED)
+            elif outcome.retryable and job.attempts < job.max_attempts:
                 delay = self.retry_policy.delay(job.attempts)
                 job.run_at = datetime.now(UTC) + timedelta(seconds=delay)
                 transition(job, JobStatus.SCHEDULED)
@@ -245,8 +246,11 @@ class Worker:
                     job.max_attempts,
                 )
             else:
-                transition(job, outcome.status)
-            if outcome.status is JobStatus.SUCCEEDED:
+                transition(job, JobStatus.DEAD)
+                log.warning(
+                    "job %s is dead after %d attempt(s): %s", job_id, job.attempts, outcome.error
+                )
+            if outcome.succeeded:
                 # Same transaction as the status change: the effect exists if and only if
                 # this claim's success was recorded.
                 session.add(

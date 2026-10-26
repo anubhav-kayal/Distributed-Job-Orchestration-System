@@ -89,7 +89,7 @@ async def test_stale_worker_cannot_record_a_result_after_reclaim(
 
     # A wakes up, unaware of any of this, and tries to record its own result.
     accepted = await stale._finish(
-        job_id, claimed.lease_token, Outcome(JobStatus.SUCCEEDED, result={"from": "stale"})
+        job_id, claimed.lease_token, Outcome(True, result={"from": "stale"})
     )
 
     assert accepted is False
@@ -115,7 +115,7 @@ async def test_stale_worker_is_fenced_even_while_the_new_run_is_in_progress(
     await make_worker(sessionmaker, queue, leases, "fresh")._claim(job_id)  # B: token 2
 
     accepted = await stale._finish(
-        job_id, claimed.lease_token, Outcome(JobStatus.FAILED, error="stale failure")
+        job_id, claimed.lease_token, Outcome(False, error="stale failure")
     )
 
     assert accepted is False
