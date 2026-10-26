@@ -10,8 +10,12 @@ MINUTES=${1:-3}
 API=${API:-localhost:${DJOS_API_HOST_PORT:-58000}}
 psql() { docker compose exec -T postgres psql -U djos -d djos -tAc "$1"; }
 
+# Keep however many workers are running; compose resets unnamed services to scale 1.
+WORKERS=$(docker compose ps -q worker 2>/dev/null | wc -l | tr -d ' ')
+WORKERS=${WORKERS:-1}; [ "$WORKERS" -ge 1 ] || WORKERS=1
+
 echo "== starting stack with 2 schedulers"
-docker compose up -d --build --wait --scale scheduler=2 >/dev/null 2>&1
+docker compose up -d --build --wait --scale scheduler=2 --scale worker="$WORKERS" >/dev/null 2>&1
 echo "   schedulers running: $(docker compose ps -q scheduler | wc -l | tr -d ' ')"
 
 name="verify-cron-$(date +%s)"
@@ -36,4 +40,4 @@ if [ "$total" -ge "$MINUTES" ] && [ "$total" -eq "$distinct" ]; then
 else
   echo "FAIL"; exit 1
 fi
-docker compose up -d --wait --scale scheduler=1 >/dev/null 2>&1
+docker compose up -d --wait --scale scheduler=1 --scale worker="$WORKERS" >/dev/null 2>&1
