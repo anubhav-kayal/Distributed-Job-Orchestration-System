@@ -33,7 +33,7 @@ async def _recreate_database(admin_url: str, name: str) -> None:
 async def _truncate_all(url: str) -> None:
     engine = create_async_engine(url)
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE jobs CASCADE"))
+        await conn.execute(text("TRUNCATE jobs, cron_schedules CASCADE"))
     await engine.dispose()
 
 

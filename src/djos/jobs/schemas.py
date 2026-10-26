@@ -17,31 +17,18 @@ from djos.models import JobStatus, Priority
 MAX_DELAY_SECONDS = 365 * 24 * 3600
 
 
-class JobCreate(BaseModel):
+class JobSpec(BaseModel):
+    """What to run: shared by direct submissions and cron schedule templates."""
+
     model_config = ConfigDict(extra="forbid")
 
     type: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,99}$", examples=["sleep"])
     payload: dict[str, Any] = Field(default_factory=dict)
     priority: Priority = Priority.NORMAL
     max_attempts: int = Field(default=3, ge=1, le=25)
-    # Run later: an absolute time (must include a timezone) or a delay. At most one.
-    run_at: AwareDatetime | None = None
-    delay_seconds: float | None = Field(default=None, ge=0, le=MAX_DELAY_SECONDS)
-
-    def resolve_run_at(self, now: datetime) -> datetime | None:
-        """When the job should first run, or None for "as soon as possible"."""
-        if self.delay_seconds is not None:
-            return now + timedelta(seconds=self.delay_seconds)
-        return self.run_at
 
     @model_validator(mode="after")
-    def check_schedule(self) -> "JobCreate":
-        if self.run_at is not None and self.delay_seconds is not None:
-            raise ValueError("give either run_at or delay_seconds, not both")
-        return self
-
-    @model_validator(mode="after")
-    def validate_payload_for_type(self) -> "JobCreate":
+    def validate_payload_for_type(self) -> "JobSpec":
         try:
             handler = get_handler(self.type)
         except UnknownJobType:
@@ -58,6 +45,24 @@ class JobCreate(BaseModel):
         # Store the normalized dump: defaults are filled in and the worker sees exactly
         # what was validated.
         self.payload = validated.model_dump(mode="json")
+        return self
+
+
+class JobCreate(JobSpec):
+    # Run later: an absolute time (must include a timezone) or a delay. At most one.
+    run_at: AwareDatetime | None = None
+    delay_seconds: float | None = Field(default=None, ge=0, le=MAX_DELAY_SECONDS)
+
+    def resolve_run_at(self, now: datetime) -> datetime | None:
+        """When the job should first run, or None for "as soon as possible"."""
+        if self.delay_seconds is not None:
+            return now + timedelta(seconds=self.delay_seconds)
+        return self.run_at
+
+    @model_validator(mode="after")
+    def check_schedule(self) -> "JobCreate":
+        if self.run_at is not None and self.delay_seconds is not None:
+            raise ValueError("give either run_at or delay_seconds, not both")
         return self
 
 
