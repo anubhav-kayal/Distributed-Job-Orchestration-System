@@ -70,5 +70,6 @@ async def cancel_job(job_id: uuid.UUID, session: SessionDep) -> JobOut:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from None
     except InvalidTransition as exc:
         raise HTTPException(
-            status.HTTP_409_CONFLICT, f"job is {exc.current}; only queued jobs can be cancelled"
+            status.HTTP_409_CONFLICT,
+            f"job is {exc.current}; only queued or scheduled jobs can be cancelled",
         ) from None

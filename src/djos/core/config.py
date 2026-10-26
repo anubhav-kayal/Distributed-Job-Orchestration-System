@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # Retry backoff after a failed attempt: random in [0, min(cap, base * 2^(attempt-1))].
     retry_base_seconds: float = 1.0
     retry_cap_seconds: float = 300.0
+    # Scheduler: how often it looks for due jobs, and how many it promotes per query.
+    scheduler_interval_seconds: float = 0.5
+    scheduler_batch_size: int = 100
     # Monitor: how often it sweeps, how long a job may sit `queued` before we check that
     # its ID is really in Redis, and how many jobs each sweep looks at.
     monitor_interval_seconds: float = 5.0
