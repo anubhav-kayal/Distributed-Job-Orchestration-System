@@ -3,6 +3,7 @@
 x-djos-env: &djos-env
   DJOS_DATABASE_URL: postgresql+asyncpg://djos:djos@postgres:5432/djos
   DJOS_REDIS_URL: redis://redis:6379/0
+  DJOS_LOG_FORMAT: json
   DJOS_LEASE_TTL_SECONDS: ${DJOS_LEASE_TTL_SECONDS:-30}
   DJOS_HEARTBEAT_INTERVAL_SECONDS: ${DJOS_HEARTBEAT_INTERVAL_SECONDS:-10}
   DJOS_MONITOR_INTERVAL_SECONDS: ${DJOS_MONITOR_INTERVAL_SECONDS:-5}
@@ -96,6 +97,28 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    volumes:
+      - ./deploy/prometheus:/etc/prometheus:ro
+    ports:
+      - "${DJOS_PROMETHEUS_HOST_PORT:-59090}:9090"
+
+  grafana:
+    image: grafana/grafana:12.0.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"   # local demo: view dashboards without logging in
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${DJOS_GRAFANA_PASSWORD:-admin}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/djos.json
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "${DJOS_GRAFANA_HOST_PORT:-53000}:3000"
+    depends_on:
+      - prometheus
 
 volumes:
   pgdata:

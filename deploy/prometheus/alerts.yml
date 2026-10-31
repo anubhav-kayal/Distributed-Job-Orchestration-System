@@ -1,0 +1,34 @@
+groups:
+  - name: djos
+    rules:
+      - alert: DeadLetterQueueGrowing
+        expr: delta(djos_jobs{status="dead"}[10m]) > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "Jobs are dying ({{ $value }} more dead in 10m)"
+          description: "Inspect GET /dlq: jobs exhausted their retries or failed permanently."
+
+      - alert: QueueBacklogHigh
+        expr: sum(djos_queue_depth) > 500
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} jobs waiting for a worker"
+          description: "Workers aren't keeping up: scale out (or check that they're healthy)."
+
+      - alert: NoWorkers
+        expr: sum(up{job="worker"}) == 0 or absent(up{job="worker"})
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "No worker is up: nothing is being processed"
+
+      - alert: FencedWritesSeen
+        expr: increase(djos_fenced_writes_total[10m]) > 0
+        labels: {severity: info}
+        annotations:
+          summary: "A worker stalled past its lease and was fenced"
+          description: >
+            Correctness held (the stale write was rejected), but something is pausing
+            workers longer than the lease TTL: GC, CPU starvation, or network trouble.

@@ -53,6 +53,10 @@ WORKER_BUSY = Gauge("djos_worker_busy", "1 while this worker is running a job")
 
 # --- Monitor ---
 RECLAIMS = Counter("djos_reclaims_total", "Orphaned running jobs taken back", ["outcome"])
+# A labelled series doesn't exist until first used; start the known ones at 0 so
+# dashboards and alerts see "0", not "no data", before the first crash.
+for _outcome in ("requeued", "dead"):
+    RECLAIMS.labels(_outcome)
 STRANDED_REENQUEUED = Counter(
     "djos_stranded_reenqueued_total", "Queued jobs re-pushed because their ID was missing"
 )
