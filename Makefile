@@ -1,4 +1,4 @@
-.PHONY: up down logs test test-unit lint fmt migrate demo-crash demo-pause verify chaos verify-cron demo-tenants
+.PHONY: up down logs test test-unit lint fmt migrate demo-crash demo-pause verify chaos verify-cron demo-tenants autoscale bench
 
 WORKERS ?= 3
 # Short timings so crashes are detected and reclaimed within seconds (used by chaos/demos).
@@ -37,13 +37,17 @@ demo-pause:  ## freeze a worker mid-job; show its stale write rejected by fencin
 verify:  ## 1000 jobs on $(WORKERS) workers; check every job has exactly one effect
 	uv run python scripts/verify_exactly_once.py --jobs 1000 --workers $(WORKERS)
 
-chaos:  ## same, while SIGKILLing a random worker every 4s
-	$(FAST) docker compose up -d --build --wait --scale worker=$(WORKERS)
-	uv run python scripts/verify_exactly_once.py --jobs 1000 --workers $(WORKERS) --kill-every 4 --timeout 600
-	docker compose up -d --wait --scale worker=$(WORKERS)
+chaos:  ## chaos suite: kills, pauses, restarts and Redis loss under a mixed workload; checks invariants
+	uv run python -m chaos.run --jobs 1500 --workflows 60 --fault-every 3
 
 verify-cron:  ## every-minute cron with 2 scheduler replicas: exactly one job per minute
 	./scripts/verify_cron.sh 3
 
 demo-tenants:  ## noisy tenant (max 1 running) vs quiet tenant; then hit a rate limit
 	./scripts/demo_tenants.sh
+
+autoscale:  ## run the autoscaler on the host (2..8 workers, 20 backlog per worker)
+	uv run python -m djos.autoscaler --min 2 --max 8 --target 20
+
+bench:  ## benchmarks -> docs/benchmarks/ (BACKEND=redis|postgres)
+	uv run python -m bench.run --backend $(or $(BACKEND),redis)
