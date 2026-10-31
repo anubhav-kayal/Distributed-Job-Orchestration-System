@@ -1,0 +1,103 @@
+{
+  "backend": "redis",
+  "throughput": [
+    {
+      "workers": 1,
+      "job_seconds": 0.0,
+      "jobs": 1000,
+      "seconds": 6.26,
+      "jobs_per_second": 159.7
+    },
+    {
+      "workers": 2,
+      "job_seconds": 0.0,
+      "jobs": 1000,
+      "seconds": 2.22,
+      "jobs_per_second": 450.2
+    },
+    {
+      "workers": 4,
+      "job_seconds": 0.0,
+      "jobs": 1000,
+      "seconds": 1.61,
+      "jobs_per_second": 621.7
+    },
+    {
+      "workers": 8,
+      "job_seconds": 0.0,
+      "jobs": 1000,
+      "seconds": 1.85,
+      "jobs_per_second": 541.1
+    },
+    {
+      "workers": 1,
+      "job_seconds": 0.05,
+      "jobs": 1000,
+      "seconds": 67.74,
+      "jobs_per_second": 14.8
+    },
+    {
+      "workers": 2,
+      "job_seconds": 0.05,
+      "jobs": 1000,
+      "seconds": 34.12,
+      "jobs_per_second": 29.3
+    },
+    {
+      "workers": 4,
+      "job_seconds": 0.05,
+      "jobs": 1000,
+      "seconds": 16.61,
+      "jobs_per_second": 60.2
+    },
+    {
+      "workers": 8,
+      "job_seconds": 0.05,
+      "jobs": 1000,
+      "seconds": 8.36,
+      "jobs_per_second": 119.7
+    }
+  ],
+  "latency": [
+    {
+      "workers": 4,
+      "rate_per_second": 20,
+      "jobs": 600,
+      "job_seconds": 0.05,
+      "end_to_end_ms": {
+        "50": 63.8,
+        "95": 67.8,
+        "99": 70.6
+      },
+      "queue_wait_ms": {
+        "50": 7.6,
+        "95": 9.2,
+        "99": 12.1
+      }
+    },
+    {
+      "workers": 4,
+      "rate_per_second": 60,
+      "jobs": 1800,
+      "job_seconds": 0.05,
+      "end_to_end_ms": {
+        "50": 59.3,
+        "95": 89.8,
+        "99": 118.7
+      },
+      "queue_wait_ms": {
+        "50": 4.4,
+        "95": 33.2,
+        "99": 61.5
+      }
+    }
+  ],
+  "recovery": {
+    "lease_ttl_seconds": 4,
+    "trials": 5,
+    "kill_to_rerun_seconds": {
+      "median": 4.2,
+      "max": 4.55
+    }
+  }
+}

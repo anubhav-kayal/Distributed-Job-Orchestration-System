@@ -1,0 +1,103 @@
+{
+  "backend": "postgres",
+  "throughput": [
+    {
+      "workers": 1,
+      "job_seconds": 0.0,
+      "jobs": 1000,
+      "seconds": 5.16,
+      "jobs_per_second": 193.7
+    },
+    {
+      "workers": 2,
+      "job_seconds": 0.0,
+      "jobs": 1000,
+      "seconds": 2.3,
+      "jobs_per_second": 434.4
+    },
+    {
+      "workers": 4,
+      "job_seconds": 0.0,
+      "jobs": 1000,
+      "seconds": 1.62,
+      "jobs_per_second": 618.2
+    },
+    {
+      "workers": 8,
+      "job_seconds": 0.0,
+      "jobs": 1000,
+      "seconds": 1.72,
+      "jobs_per_second": 582.0
+    },
+    {
+      "workers": 1,
+      "job_seconds": 0.05,
+      "jobs": 1000,
+      "seconds": 69.42,
+      "jobs_per_second": 14.4
+    },
+    {
+      "workers": 2,
+      "job_seconds": 0.05,
+      "jobs": 1000,
+      "seconds": 34.96,
+      "jobs_per_second": 28.6
+    },
+    {
+      "workers": 4,
+      "job_seconds": 0.05,
+      "jobs": 1000,
+      "seconds": 16.74,
+      "jobs_per_second": 59.8
+    },
+    {
+      "workers": 8,
+      "job_seconds": 0.05,
+      "jobs": 1000,
+      "seconds": 8.55,
+      "jobs_per_second": 116.9
+    }
+  ],
+  "latency": [
+    {
+      "workers": 4,
+      "rate_per_second": 20,
+      "jobs": 600,
+      "job_seconds": 0.05,
+      "end_to_end_ms": {
+        "50": 81.2,
+        "95": 114.2,
+        "99": 122.9
+      },
+      "queue_wait_ms": {
+        "50": 22.5,
+        "95": 55.7,
+        "99": 63.3
+      }
+    },
+    {
+      "workers": 4,
+      "rate_per_second": 60,
+      "jobs": 1800,
+      "job_seconds": 0.05,
+      "end_to_end_ms": {
+        "50": 86.6,
+        "95": 113.3,
+        "99": 140.3
+      },
+      "queue_wait_ms": {
+        "50": 31.3,
+        "95": 56.2,
+        "99": 84.7
+      }
+    }
+  ],
+  "recovery": {
+    "lease_ttl_seconds": 4,
+    "trials": 5,
+    "kill_to_rerun_seconds": {
+      "median": 4.22,
+      "max": 5.06
+    }
+  }
+}
