@@ -37,6 +37,7 @@ from djos.coordination import Leases
 from djos.jobs.states import transition
 from djos.models import Job, JobStatus
 from djos.queue import RedisQueue
+from djos.workflows.engine import on_job_finished
 
 log = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ class Monitor:
             if job.attempts >= job.max_attempts:
                 job.last_error = f"{reason}; no attempts left"
                 transition(job, JobStatus.DEAD)
+                await on_job_finished(session, job)  # its workflow descendants can't run
                 result.dead += 1
             else:
                 job.last_error = f"{reason}; requeued"

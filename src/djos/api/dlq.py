@@ -34,3 +34,7 @@ async def retry_dead_job(job_id: uuid.UUID, session: SessionDep, queue: QueueDep
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"job is {exc.current}; only dead jobs can be retried"
         ) from None
+    except service.WorkflowCancelled:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "the job's workflow was cancelled; it can't be retried"
+        ) from None

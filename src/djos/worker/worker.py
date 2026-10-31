@@ -34,9 +34,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from djos.coordination import Leases
 from djos.handlers import JobContext, PermanentError, UnknownJobType, get_handler
 from djos.jobs.retry import RetryPolicy
-from djos.jobs.states import transition
+from djos.jobs.states import TERMINAL_STATUSES, transition
 from djos.models import Effect, Job, JobStatus, Priority
 from djos.queue import RedisQueue, WeightedRotation
+from djos.workflows.engine import on_job_finished
 
 log = logging.getLogger(__name__)
 
@@ -265,5 +266,13 @@ class Worker:
                         data=outcome.result,
                     )
                 )
+            # Still inside the fenced transaction: unblocking children (or failing them)
+            # commits together with this outcome, so it happens exactly once.
+            ready = await on_job_finished(session, job) if job.status in TERMINAL_STATUSES else []
             await session.commit()
-            return True
+        for child in ready:
+            try:
+                await self.queue.enqueue(child.id, child.priority)
+            except RedisError:
+                log.warning("enqueue of unblocked job %s failed; monitor will re-push", child.id)
+        return True

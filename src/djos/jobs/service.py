@@ -13,12 +13,17 @@ from djos.jobs.schemas import JobCreate
 from djos.jobs.states import transition
 from djos.models import Job, JobStatus
 from djos.queue import RedisQueue
+from djos.workflows.engine import lock_workflow, on_job_finished, on_job_revived
 
 log = logging.getLogger(__name__)
 
 
 class JobNotFound(Exception):
     pass
+
+
+class WorkflowCancelled(Exception):
+    """The job belongs to a workflow that was cancelled; it can't be retried."""
 
 
 class IdempotencyKeyReused(Exception):
@@ -149,6 +154,7 @@ async def cancel_job(session: AsyncSession, job_id: uuid.UUID) -> Job:
     if job is None:
         raise JobNotFound(job_id)
     transition(job, JobStatus.CANCELLED)  # InvalidTransition unless queued or scheduled
+    await on_job_finished(session, job)  # in a workflow, its descendants can't run now
     await session.commit()
     return job
 
@@ -181,10 +187,15 @@ async def retry_dead_job(session: AsyncSession, queue: RedisQueue, job_id: uuid.
     ).one_or_none()
     if job is None:
         raise JobNotFound(job_id)
+    if job.workflow_id is not None:
+        workflow = await lock_workflow(session, job.workflow_id)
+        if workflow.cancelled_at is not None:
+            raise WorkflowCancelled(job.workflow_id)
     transition(job, JobStatus.QUEUED)  # InvalidTransition unless dead
     job.attempts = 0
     job.result = None
     job.run_at = None
+    await on_job_revived(session, job)  # descendants it took down wait for it again
     await session.commit()
     try:
         await queue.enqueue(job.id, job.priority)
