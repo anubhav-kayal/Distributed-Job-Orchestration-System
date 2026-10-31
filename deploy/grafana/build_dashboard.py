@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 DS = {"type": "prometheus", "uid": "prometheus"}
+JOBS_PER_S = "suffix: jobs/s"  # Grafana's "reqps" would label job rates "req/s"
 _ids = iter(range(1, 1000))
 
 
@@ -77,7 +78,7 @@ PANELS = [
         "Throughput",
         'sum(rate(djos_jobs_finished_total{outcome="succeeded"}[1m]))',
         0,
-        unit="reqps",
+        unit=JOBS_PER_S,
         decimals=1,
         description="Jobs succeeding per second",
     ),
@@ -96,7 +97,7 @@ PANELS = [
         [target("sum by (outcome) (rate(djos_jobs_finished_total[1m]))", "{{outcome}}")],
         0,
         4,
-        unit="reqps",
+        unit=JOBS_PER_S,
         stack=True,
     ),
     series(
@@ -120,7 +121,6 @@ PANELS = [
         [target('djos_jobs{status!="succeeded"}', "{{status}}")],
         0,
         20,
-        stack=True,
         description="Everything except succeeded (which only grows)",
     ),
     series(
@@ -134,7 +134,7 @@ PANELS = [
         ],
         12,
         20,
-        unit="reqps",
+        unit="suffix: /s",
     ),
     series(
         "API requests / s",

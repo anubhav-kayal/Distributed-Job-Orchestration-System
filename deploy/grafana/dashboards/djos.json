@@ -41,7 +41,7 @@
       "description": "Jobs succeeding per second",
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "suffix: jobs/s",
           "decimals": 1
         },
         "overrides": []
@@ -293,7 +293,7 @@
       "description": "",
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "suffix: jobs/s",
           "custom": {
             "fillOpacity": 20,
             "stacking": {
@@ -511,9 +511,9 @@
         "defaults": {
           "unit": "short",
           "custom": {
-            "fillOpacity": 20,
+            "fillOpacity": 0,
             "stacking": {
-              "mode": "normal"
+              "mode": "none"
             }
           }
         },
@@ -590,7 +590,7 @@
       "description": "",
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "suffix: /s",
           "custom": {
             "fillOpacity": 0,
             "stacking": {
