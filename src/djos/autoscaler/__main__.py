@@ -23,7 +23,7 @@ from djos.core import db, redis
 from djos.core.config import get_settings
 from djos.core.logging import setup_logging
 from djos.models import Job, JobStatus
-from djos.queue import RedisQueue
+from djos.queue import make_queue
 
 log = logging.getLogger("djos.autoscaler")
 
@@ -58,8 +58,8 @@ async def main() -> None:
     redis_client = redis.create_redis(
         settings.redis_url, socket_timeout=settings.redis_socket_timeout_seconds
     )
-    queue = RedisQueue(redis_client)
     sessionmaker = db.create_sessionmaker(engine)
+    queue = make_queue(settings, redis_client, sessionmaker)
     policy = ScalingPolicy(args.min, args.max, args.target, args.window)
     scaler = ComposeScaler()
     log.info("autoscaler started: %s", policy)

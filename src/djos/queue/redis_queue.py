@@ -28,6 +28,8 @@ QUEUE_KEYS = tuple(queue_key(p) for p in PRIORITY_ORDER)
 
 
 class RedisQueue:
+    claims_in_postgres = False
+
     def __init__(self, redis: Redis):
         self.redis = redis
 

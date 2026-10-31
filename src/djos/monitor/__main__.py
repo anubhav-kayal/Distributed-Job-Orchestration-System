@@ -8,7 +8,7 @@ from djos.core import db, metrics, redis
 from djos.core.config import get_settings
 from djos.core.logging import setup_logging
 from djos.monitor import Monitor
-from djos.queue import RedisQueue
+from djos.queue import make_queue
 
 
 async def main() -> None:
@@ -17,12 +17,13 @@ async def main() -> None:
     metrics.serve(settings.metrics_port)
 
     engine = db.create_engine(settings.database_url)
+    sessionmaker = db.create_sessionmaker(engine)
     redis_client = redis.create_redis(
         settings.redis_url, socket_timeout=settings.redis_socket_timeout_seconds
     )
     monitor = Monitor(
-        db.create_sessionmaker(engine),
-        RedisQueue(redis_client),
+        sessionmaker,
+        make_queue(settings, redis_client, sessionmaker),
         Leases(redis_client, ttl_seconds=settings.lease_ttl_seconds),
         interval_seconds=settings.monitor_interval_seconds,
         stranded_after_seconds=settings.stranded_after_seconds,

@@ -7,7 +7,7 @@ from djos.api import admin, dlq, health, jobs, observability, schedules, workflo
 from djos.core import db, redis
 from djos.core.config import Settings, get_settings
 from djos.core.logging import setup_logging
-from djos.queue import RedisQueue
+from djos.queue import make_queue
 from djos.tenancy.ratelimit import RateLimiter
 
 
@@ -24,7 +24,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.redis = redis.create_redis(
             settings.redis_url, socket_timeout=settings.redis_socket_timeout_seconds
         )
-        app.state.queue = RedisQueue(app.state.redis)
+        app.state.queue = make_queue(settings, app.state.redis, app.state.sessionmaker)
         app.state.limiter = RateLimiter(app.state.redis)
         try:
             yield

@@ -122,6 +122,14 @@ class Job(Base):
         UniqueConstraint("tenant_id", "idempotency_key"),
         # The concurrency cap's query: how many of this tenant's jobs are running.
         Index("ix_jobs_tenant_id_status", "tenant_id", "status"),
+        # The Postgres queue backend's pick: oldest queued job in a priority tier. Partial,
+        # so it only holds queued rows and stays small however many jobs have finished.
+        Index(
+            "ix_jobs_queued",
+            "priority",
+            "created_at",
+            postgresql_where=text("status = 'queued'"),
+        ),
     )
     # Fetch DB-generated values (updated_at = now()) via RETURNING on INSERT/UPDATE.
     # Without this they'd be lazily reloaded on access, which async sessions can't do.

@@ -9,7 +9,7 @@ from djos.core.config import get_settings
 from djos.core.logging import setup_logging
 from djos.jobs.retry import RetryPolicy
 from djos.models import Priority
-from djos.queue import RedisQueue
+from djos.queue import make_queue
 from djos.worker import Worker
 
 
@@ -19,12 +19,13 @@ async def main() -> None:
     metrics.serve(settings.metrics_port)
 
     engine = db.create_engine(settings.database_url)
+    sessionmaker = db.create_sessionmaker(engine)
     redis_client = redis.create_redis(
         settings.redis_url, socket_timeout=settings.redis_socket_timeout_seconds
     )
     worker = Worker(
-        db.create_sessionmaker(engine),
-        RedisQueue(redis_client),
+        sessionmaker,
+        make_queue(settings, redis_client, sessionmaker),
         Leases(redis_client, ttl_seconds=settings.lease_ttl_seconds),
         block_seconds=settings.worker_block_seconds,
         heartbeat_seconds=settings.heartbeat_interval_seconds,

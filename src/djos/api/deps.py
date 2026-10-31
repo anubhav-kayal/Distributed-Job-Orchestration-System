@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from djos.core import metrics
 from djos.models import DEFAULT_TENANT_ID, Tenant
-from djos.queue import RedisQueue
+from djos.queue import Queue
 from djos.tenancy.keys import hash_api_key
 from djos.tenancy.ratelimit import RateLimiter
 
@@ -21,11 +21,11 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
-def get_queue(request: Request) -> RedisQueue:
+def get_queue(request: Request) -> Queue:
     return request.app.state.queue
 
 
-QueueDep = Annotated[RedisQueue, Depends(get_queue)]
+QueueDep = Annotated[Queue, Depends(get_queue)]
 
 
 def _bearer(authorization: str | None) -> str | None:

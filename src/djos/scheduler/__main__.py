@@ -6,7 +6,7 @@ import signal
 from djos.core import db, metrics, redis
 from djos.core.config import get_settings
 from djos.core.logging import setup_logging
-from djos.queue import RedisQueue
+from djos.queue import make_queue
 from djos.scheduler import Scheduler
 
 
@@ -16,12 +16,13 @@ async def main() -> None:
     metrics.serve(settings.metrics_port)
 
     engine = db.create_engine(settings.database_url)
+    sessionmaker = db.create_sessionmaker(engine)
     redis_client = redis.create_redis(
         settings.redis_url, socket_timeout=settings.redis_socket_timeout_seconds
     )
     scheduler = Scheduler(
-        db.create_sessionmaker(engine),
-        RedisQueue(redis_client),
+        sessionmaker,
+        make_queue(settings, redis_client, sessionmaker),
         interval_seconds=settings.scheduler_interval_seconds,
         batch_size=settings.scheduler_batch_size,
     )

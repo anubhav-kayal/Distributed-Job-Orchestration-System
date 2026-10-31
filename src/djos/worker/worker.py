@@ -38,10 +38,12 @@ from djos.handlers import JobContext, PermanentError, UnknownJobType, get_handle
 from djos.jobs.retry import RetryPolicy
 from djos.jobs.states import TERMINAL_STATUSES, transition
 from djos.models import Effect, Job, JobStatus, Priority, Tenant
-from djos.queue import RedisQueue, WeightedRotation
+from djos.queue import PostgresQueue, Queue, WeightedRotation
 from djos.workflows.engine import on_job_finished
 
 log = logging.getLogger(__name__)
+
+_DEFERRED = object()  # sentinel: a job was claimed-then-deferred (tenant at its cap)
 
 MAX_ERROR_LENGTH = 4000
 
@@ -74,7 +76,7 @@ class Worker:
     def __init__(
         self,
         sessionmaker: async_sessionmaker,
-        queue: RedisQueue,
+        queue: Queue,
         leases: Leases,
         *,
         worker_id: str | None = None,
@@ -114,16 +116,17 @@ class Worker:
         log.info("worker %s stopped", self.worker_id)
 
     async def process_next(self) -> bool:
-        """Pop and process one job. Returns False if the queue stayed empty."""
+        """Take and process one job. Returns False if none arrived within block_seconds."""
+        if self.queue.claims_in_postgres:
+            return await self._process_next_from_postgres()
+
         job_id = await self.queue.dequeue(
             block_seconds=self.block_seconds, prefer=self.rotation.next()
         )
         if job_id is None:
             return False
 
-        # Unique per claim, so a lease from this worker's earlier run of the same job
-        # can never be mistaken for the current one.
-        owner = f"{self.worker_id}:{uuid.uuid4().hex[:12]}"
+        owner = self._new_owner()
         if not await self.leases.acquire(job_id, owner):
             log.info("job %s is leased by %s; skipping", job_id, await self.leases.holder(job_id))
             return True
@@ -131,22 +134,83 @@ class Worker:
             with bind(job_id=job_id, worker_id=self.worker_id):
                 job = await self._claim(job_id)
                 if job is not None:
-                    runnable_since = job.run_at or job.created_at
-                    metrics.QUEUE_WAIT.labels(job.priority.value).observe(
-                        max(0.0, (job.started_at - runnable_since).total_seconds())
-                    )
-                    metrics.WORKER_BUSY.set(1)
-                    try:
-                        with bind(tenant_id=job.tenant_id, lease_token=job.lease_token):
-                            await self._run_and_record(job, owner)
-                    finally:
-                        metrics.WORKER_BUSY.set(0)
+                    await self._run_claimed(job, owner)
         finally:
-            try:
-                await self.leases.release(job_id, owner)
-            except RedisError:
-                log.warning("could not release lease on %s; it will expire", job_id)
+            await self._release(job_id, owner)
         return True
+
+    async def _process_next_from_postgres(self) -> bool:
+        """Postgres backend: pick-and-claim in one transaction; poll with backoff when idle
+        (there's no blocking pop as with Redis)."""
+        deadline = time.monotonic() + self.block_seconds
+        delay = self.queue.poll_seconds
+        while True:
+            claimed = await self._claim_from_postgres(self.rotation.next())
+            if claimed is _DEFERRED:
+                return True
+            if claimed is not None:
+                job, owner = claimed
+                try:
+                    with bind(job_id=job.id, worker_id=self.worker_id):
+                        await self._run_claimed(job, owner)
+                finally:
+                    await self._release(job.id, owner)
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(delay, remaining))
+            delay = min(delay * 2, 0.5)
+
+    async def _claim_from_postgres(self, prefer: Priority):
+        """Lock the next queued job (SKIP LOCKED), lease it and mark it running, all in one
+        transaction. Returns (job, owner), _DEFERRED, or None if nothing is queued."""
+        async with self.sessionmaker() as session:
+            for tier in PostgresQueue.order(prefer):
+                skip: set[uuid.UUID] = set()
+                while job := (
+                    await session.scalars(PostgresQueue.next_in_tier(tier, skip))
+                ).first():
+                    owner = self._new_owner()
+                    if not await self.leases.acquire(job.id, owner):
+                        skip.add(job.id)  # a lease is still held (e.g. a just-reclaimed job)
+                        continue
+                    try:
+                        if await self._tenant_at_capacity(session, job):
+                            self._defer(job)
+                            await session.commit()
+                            return _DEFERRED
+                        transition(job, JobStatus.RUNNING)
+                        job.locked_by = self.worker_id
+                        await session.commit()
+                    except BaseException:
+                        await self._release(job.id, owner)
+                        raise
+                    return job, owner
+        return None
+
+    def _new_owner(self) -> str:
+        # Unique per claim, so a lease from this worker's earlier run of the same job
+        # can never be mistaken for the current one.
+        return f"{self.worker_id}:{uuid.uuid4().hex[:12]}"
+
+    async def _release(self, job_id: uuid.UUID, owner: str) -> None:
+        try:
+            await self.leases.release(job_id, owner)
+        except RedisError:
+            log.warning("could not release lease on %s; it will expire", job_id)
+
+    async def _run_claimed(self, job: Job, owner: str) -> None:
+        runnable_since = job.run_at or job.created_at
+        metrics.QUEUE_WAIT.labels(job.priority.value).observe(
+            max(0.0, (job.started_at - runnable_since).total_seconds())
+        )
+        metrics.WORKER_BUSY.set(1)
+        try:
+            with bind(tenant_id=job.tenant_id, lease_token=job.lease_token):
+                await self._run_and_record(job, owner)
+        finally:
+            metrics.WORKER_BUSY.set(0)
 
     async def _claim(self, job_id: uuid.UUID) -> Job | None:
         """Move the job queued → running in Postgres. Redis only told us the ID; Postgres
@@ -163,20 +227,21 @@ class Worker:
                 log.info("job %s is %s, not queued; skipping", job_id, job.status)
                 return None
             if await self._tenant_at_capacity(session, job):
-                # Don't run it now, and don't hot-loop on it either: hand it back to the
-                # scheduler for a moment, so other tenants' jobs get the worker meanwhile.
-                job.run_at = datetime.now(UTC) + timedelta(seconds=self.tenant_defer_seconds)
-                transition(job, JobStatus.SCHEDULED)
+                self._defer(job)
                 await session.commit()
-                metrics.JOBS_DEFERRED.inc()
-                log.info(
-                    "job %s deferred: tenant %s is at its concurrency limit", job_id, job.tenant_id
-                )
                 return None
             transition(job, JobStatus.RUNNING)
             job.locked_by = self.worker_id
             await session.commit()
             return job
+
+    def _defer(self, job: Job) -> None:
+        """Don't run it now, and don't hot-loop on it either: hand it back to the scheduler
+        for a moment, so other tenants' jobs get the worker meanwhile."""
+        job.run_at = datetime.now(UTC) + timedelta(seconds=self.tenant_defer_seconds)
+        transition(job, JobStatus.SCHEDULED)
+        metrics.JOBS_DEFERRED.inc()
+        log.info("job %s deferred: tenant %s is at its concurrency limit", job.id, job.tenant_id)
 
     async def _tenant_at_capacity(self, session, job: Job) -> bool:
         """Whether the job's tenant already has max_concurrency jobs running.

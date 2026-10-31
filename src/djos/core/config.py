@@ -12,6 +12,10 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://djos:djos@localhost:55432/djos"
     redis_url: str = "redis://localhost:56379/0"
+    # Where queued jobs wait: Redis lists (blocking pops) or the jobs table itself
+    # (SELECT … FOR UPDATE SKIP LOCKED, polled every postgres_poll_seconds when idle).
+    queue_backend: Literal["redis", "postgres"] = "redis"
+    postgres_poll_seconds: float = 0.05
     # Max wait for any single Redis reply. Must exceed worker_block_seconds (BLMPOP).
     redis_socket_timeout_seconds: float = 5.0
     log_level: str = "INFO"
