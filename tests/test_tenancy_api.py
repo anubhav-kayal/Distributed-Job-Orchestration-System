@@ -3,10 +3,12 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from djos.api.main import create_app
+from djos.core.config import Settings
 
 pytestmark = pytest.mark.integration
 
-ADMIN = {"Authorization": "Bearer admin-secret"}
+ADMIN_TOKEN = "admin-secret-0123456789"
+ADMIN = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
 JOB = {"type": "sleep", "payload": {"seconds": 0}}
 
 
@@ -15,7 +17,7 @@ def make_client(test_settings, clean_state):
     clients = []
 
     def make(**overrides) -> TestClient:
-        overrides = {"admin_token": SecretStr("admin-secret"), **overrides}
+        overrides = {"admin_token": SecretStr(ADMIN_TOKEN), **overrides}
         settings = test_settings.model_copy(update=overrides)
         client = TestClient(create_app(settings)).__enter__()
         clients.append(client)
@@ -46,6 +48,20 @@ def test_admin_api_is_hidden_without_an_admin_token(make_client):
 def test_admin_token_is_checked(api):
     resp = api.post("/admin/tenants", json={"name": "x"}, headers={"Authorization": "Bearer no"})
     assert resp.status_code == 401
+    assert api.get("/admin/tenants").status_code == 401  # no credentials at all
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_an_empty_admin_token_disables_the_admin_api(value, monkeypatch):
+    # Regression: an empty token used to enable the admin API with "" as the password,
+    # so a request with no Authorization header matched it.
+    monkeypatch.setenv("DJOS_ADMIN_TOKEN", value)
+    assert Settings().admin_token is None
+
+
+def test_a_short_admin_token_is_rejected():
+    with pytest.raises(ValueError, match="at least 16"):
+        Settings(admin_token="short")
 
 
 def test_create_tenant_returns_the_key_once(api):

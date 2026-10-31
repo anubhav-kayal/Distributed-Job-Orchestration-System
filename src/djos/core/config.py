@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +44,18 @@ class Settings(BaseSettings):
     monitor_interval_seconds: float = 5.0
     stranded_after_seconds: float = 30.0
     monitor_batch_size: int = 100
+
+    @field_validator("admin_token", mode="before")
+    @classmethod
+    def _admin_token(cls, value):
+        # An empty token must mean "admin API off", never "the empty string is the
+        # password" (which would let a request with no credentials match it).
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        secret = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if len(secret) < 16:
+            raise ValueError("admin_token must be at least 16 characters")
+        return value
 
     @model_validator(mode="after")
     def check_timings(self) -> "Settings":

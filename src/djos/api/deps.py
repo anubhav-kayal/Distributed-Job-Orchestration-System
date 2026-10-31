@@ -97,8 +97,8 @@ def require_admin(request: Request, authorization: Annotated[str | None, Header(
     if configured is None:
         # The admin API doesn't exist unless an admin token is configured.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
-    token = _bearer(authorization) or ""
-    if not secrets.compare_digest(token, configured.get_secret_value()):
+    token = _bearer(authorization)
+    if not token or not secrets.compare_digest(token, configured.get_secret_value()):
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "invalid admin token",
