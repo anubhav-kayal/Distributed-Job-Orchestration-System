@@ -7,6 +7,9 @@ x-djos-env: &djos-env
   DJOS_HEARTBEAT_INTERVAL_SECONDS: ${DJOS_HEARTBEAT_INTERVAL_SECONDS:-10}
   DJOS_MONITOR_INTERVAL_SECONDS: ${DJOS_MONITOR_INTERVAL_SECONDS:-5}
   DJOS_RETRY_BASE_SECONDS: ${DJOS_RETRY_BASE_SECONDS:-1}
+  # Tenancy: the admin API is off unless a token (16+ chars) is given; keys optional by default.
+  DJOS_ADMIN_TOKEN: ${DJOS_ADMIN_TOKEN:-}
+  DJOS_REQUIRE_API_KEY: ${DJOS_REQUIRE_API_KEY:-false}
 
 services:
   postgres:

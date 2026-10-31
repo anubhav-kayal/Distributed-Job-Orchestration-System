@@ -1,4 +1,4 @@
-.PHONY: up down logs test test-unit lint fmt migrate demo-crash demo-pause verify chaos verify-cron
+.PHONY: up down logs test test-unit lint fmt migrate demo-crash demo-pause verify chaos verify-cron demo-tenants
 
 WORKERS ?= 3
 # Short timings so crashes are detected and reclaimed within seconds (used by chaos/demos).
@@ -44,3 +44,6 @@ chaos:  ## same, while SIGKILLing a random worker every 4s
 
 verify-cron:  ## every-minute cron with 2 scheduler replicas: exactly one job per minute
 	./scripts/verify_cron.sh 3
+
+demo-tenants:  ## noisy tenant (max 1 running) vs quiet tenant; then hit a rate limit
+	./scripts/demo_tenants.sh
