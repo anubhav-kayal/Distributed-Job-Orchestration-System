@@ -115,6 +115,7 @@ class Bench:
 
     async def latency(self, workers: int, rate: float, duration: float, seconds: float) -> dict:
         compose("up", "-d", "--no-deps", "--wait", "--scale", f"worker={workers}", "worker")
+        await asyncio.sleep(3)  # let freshly started workers connect before measuring
         prefix = f"bench-lat-{uuid.uuid4().hex[:6]}-"
         body = {"type": "sleep", "payload": {"seconds": seconds}}
         n = int(rate * duration)
@@ -237,6 +238,9 @@ async def main() -> int:
     jobs = 300 if args.quick else 1000
     results: dict = {"backend": args.backend, "throughput": [], "latency": [], "recovery": None}
     try:
+        # Unrecorded warm-up: the first run after a rebuild pays one-off costs (cold
+        # database caches, connection pools, image start) that would skew it low.
+        await bench.throughput(2, 200, 0.0)
         for seconds in (0.0, 0.05):
             for workers in (1, 2, 4, 8):
                 r = await bench.throughput(workers, jobs, seconds)
