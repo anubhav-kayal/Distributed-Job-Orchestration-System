@@ -1,5 +1,7 @@
 # 3-Week Build & Learn Plan
 
+> **Status: complete.** Every day below was built, and every scenario in the README's Proof table was run against the real stack. Deviations from the plan, and why, are in the [weekly notes](docs/notes/). For example, the scheduler reads Postgres instead of a Redis sorted set, and `upstream_failed` was added as its own status.
+
 Every day has three parts:
 - **Learn:** the concept to understand *before* coding (articles, docs, or a short explanation).
 - **Build:** what to implement.
