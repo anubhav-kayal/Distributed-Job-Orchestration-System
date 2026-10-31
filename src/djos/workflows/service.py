@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from djos.jobs.states import transition
-from djos.models import Job, JobDependency, JobStatus, Workflow
+from djos.models import DEFAULT_TENANT_ID, Job, JobDependency, JobStatus, Workflow
 from djos.queue import RedisQueue
 from djos.workflows.dag import topological_order
 from djos.workflows.engine import lock_workflow
@@ -57,6 +57,8 @@ async def submit_workflow(
     queue: RedisQueue,
     data: WorkflowCreate,
     idempotency_key: str | None = None,
+    *,
+    tenant_id: uuid.UUID = DEFAULT_TENANT_ID,
 ) -> tuple[Workflow, bool]:
     """Create the workflow and all its jobs in one transaction; enqueue the roots.
 
@@ -69,17 +71,20 @@ async def submit_workflow(
             insert(Workflow)
             .values(
                 name=data.name,
+                tenant_id=tenant_id,
                 idempotency_key=idempotency_key,
                 request_hash=fingerprint if idempotency_key else None,
             )
-            .on_conflict_do_nothing(index_elements=[Workflow.idempotency_key])
+            .on_conflict_do_nothing(index_elements=[Workflow.tenant_id, Workflow.idempotency_key])
             .returning(Workflow)
         )
     ).one_or_none()
     if workflow is None:
         existing = (
             await session.scalars(
-                select(Workflow).where(Workflow.idempotency_key == idempotency_key)
+                select(Workflow).where(
+                    Workflow.tenant_id == tenant_id, Workflow.idempotency_key == idempotency_key
+                )
             )
         ).one()
         if existing.request_hash != fingerprint:
@@ -100,6 +105,7 @@ async def submit_workflow(
             status=JobStatus.BLOCKED if deps else JobStatus.QUEUED,
             workflow_id=workflow.id,
             workflow_key=key,
+            tenant_id=tenant_id,
             pending_deps=len(deps),
             attempts=0,
             lease_token=0,
@@ -123,10 +129,19 @@ async def submit_workflow(
     return workflow, True
 
 
-async def get_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> WorkflowOut:
+async def _get_owned(
+    session: AsyncSession, workflow_id: uuid.UUID, tenant_id: uuid.UUID | None
+) -> Workflow:
     workflow = await session.get(Workflow, workflow_id)
-    if workflow is None:
+    if workflow is None or (tenant_id is not None and workflow.tenant_id != tenant_id):
         raise WorkflowNotFound(workflow_id)
+    return workflow
+
+
+async def get_workflow(
+    session: AsyncSession, workflow_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None
+) -> WorkflowOut:
+    workflow = await _get_owned(session, workflow_id, tenant_id)
     jobs = list(
         await session.scalars(
             select(Job).where(Job.workflow_id == workflow_id).order_by(Job.created_at, Job.id)
@@ -170,14 +185,14 @@ async def get_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> Workflo
 
 
 async def list_workflows(
-    session: AsyncSession, *, limit: int, offset: int
+    session: AsyncSession, *, limit: int, offset: int, tenant_id: uuid.UUID | None = None
 ) -> list[WorkflowSummary]:
+    query = select(Workflow)
+    if tenant_id is not None:
+        query = query.where(Workflow.tenant_id == tenant_id)
     workflows = list(
         await session.scalars(
-            select(Workflow)
-            .order_by(Workflow.created_at.desc(), Workflow.id)
-            .limit(limit)
-            .offset(offset)
+            query.order_by(Workflow.created_at.desc(), Workflow.id).limit(limit).offset(offset)
         )
     )
     counts: dict[uuid.UUID, Counter] = defaultdict(Counter)
@@ -202,7 +217,9 @@ async def list_workflows(
     ]
 
 
-async def cancel_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> None:
+async def cancel_workflow(
+    session: AsyncSession, workflow_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None
+) -> None:
     """Cancel every job that hasn't started. Running jobs are left to finish; their
     children are already cancelled, so nothing new starts afterwards.
 
@@ -210,8 +227,7 @@ async def cancel_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> None
     running, and will finish); waiting for it could deadlock with that worker, which
     locks the job before the workflow.
     """
-    if await session.get(Workflow, workflow_id) is None:
-        raise WorkflowNotFound(workflow_id)
+    await _get_owned(session, workflow_id, tenant_id)
     workflow = await lock_workflow(session, workflow_id)
     if workflow.cancelled_at is not None:
         return

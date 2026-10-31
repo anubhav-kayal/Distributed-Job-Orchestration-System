@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from djos.jobs.schemas import JobCreate
 from djos.jobs.states import transition
-from djos.models import Job, JobStatus
+from djos.models import DEFAULT_TENANT_ID, Job, JobStatus
 from djos.queue import RedisQueue
 from djos.workflows.engine import lock_workflow, on_job_finished, on_job_revived
 
@@ -50,6 +50,7 @@ async def insert_job(
     data: JobCreate,
     idempotency_key: str | None = None,
     *,
+    tenant_id: uuid.UUID = DEFAULT_TENANT_ID,
     now: datetime | None = None,
 ) -> Job | None:
     """INSERT the job without committing; None if the Idempotency-Key already exists.
@@ -68,17 +69,23 @@ async def insert_job(
             max_attempts=data.max_attempts,
             status=JobStatus.SCHEDULED if run_at and run_at > now else JobStatus.QUEUED,
             run_at=run_at,
+            tenant_id=tenant_id,
             idempotency_key=idempotency_key,
             request_hash=request_fingerprint(data) if idempotency_key else None,
         )
-        .on_conflict_do_nothing(index_elements=[Job.idempotency_key])
+        # Idempotency keys are unique per tenant.
+        .on_conflict_do_nothing(index_elements=[Job.tenant_id, Job.idempotency_key])
         .returning(Job)
     )
     return (await session.scalars(stmt)).one_or_none()
 
 
 async def create_job(
-    session: AsyncSession, data: JobCreate, idempotency_key: str | None = None
+    session: AsyncSession,
+    data: JobCreate,
+    idempotency_key: str | None = None,
+    *,
+    tenant_id: uuid.UUID = DEFAULT_TENANT_ID,
 ) -> tuple[Job, bool]:
     """Create a job, or return the existing one for a repeated Idempotency-Key.
 
@@ -88,7 +95,7 @@ async def create_job(
     requests see "missing" and create two jobs.
     """
     fingerprint = request_fingerprint(data)
-    job = await insert_job(session, data, idempotency_key)
+    job = await insert_job(session, data, idempotency_key, tenant_id=tenant_id)
     if job is not None:
         await session.commit()
         return job, True
@@ -96,7 +103,9 @@ async def create_job(
     # Conflict: a job with this key already exists. NULL keys never conflict, so we
     # only get here when a key was supplied.
     existing = (
-        await session.scalars(select(Job).where(Job.idempotency_key == idempotency_key))
+        await session.scalars(
+            select(Job).where(Job.tenant_id == tenant_id, Job.idempotency_key == idempotency_key)
+        )
     ).one()
     if existing.request_hash != fingerprint:
         raise IdempotencyKeyReused(idempotency_key)
@@ -104,7 +113,12 @@ async def create_job(
 
 
 async def submit_job(
-    session: AsyncSession, queue: RedisQueue, data: JobCreate, idempotency_key: str | None = None
+    session: AsyncSession,
+    queue: RedisQueue,
+    data: JobCreate,
+    idempotency_key: str | None = None,
+    *,
+    tenant_id: uuid.UUID = DEFAULT_TENANT_ID,
 ) -> tuple[Job, bool]:
     """Create the job durably in Postgres, then push its ID onto the Redis queue.
 
@@ -117,7 +131,7 @@ async def submit_job(
     Pushing an ID twice is harmless: workers claim jobs through Postgres, and a job
     that is no longer `queued` is skipped.
     """
-    job, created = await create_job(session, data, idempotency_key)
+    job, created = await create_job(session, data, idempotency_key, tenant_id=tenant_id)
     if job.status is JobStatus.QUEUED:
         try:
             await queue.enqueue(job.id, job.priority)
@@ -126,30 +140,51 @@ async def submit_job(
     return job, created
 
 
-async def get_job(session: AsyncSession, job_id: uuid.UUID) -> Job:
-    job = await session.get(Job, job_id)
-    if job is None:
+def _owned(stmt, tenant_id: uuid.UUID | None):
+    """Scope a query to one tenant's jobs; None means unscoped (internal callers)."""
+    return stmt if tenant_id is None else stmt.where(Job.tenant_id == tenant_id)
+
+
+async def get_job(
+    session: AsyncSession, job_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None
+) -> Job:
+    job = (await session.scalars(_owned(select(Job).where(Job.id == job_id), tenant_id))).first()
+    if job is None:  # another tenant's job looks exactly like a missing one
         raise JobNotFound(job_id)
     return job
 
 
 async def list_jobs(
-    session: AsyncSession, *, status: JobStatus | None, limit: int, offset: int
+    session: AsyncSession,
+    *,
+    status: JobStatus | None,
+    limit: int,
+    offset: int,
+    tenant_id: uuid.UUID | None = None,
 ) -> list[Job]:
-    stmt = select(Job).order_by(Job.created_at.desc(), Job.id).limit(limit).offset(offset)
+    stmt = (
+        _owned(select(Job), tenant_id)
+        .order_by(Job.created_at.desc(), Job.id)
+        .limit(limit)
+        .offset(offset)
+    )
     if status is not None:
         stmt = stmt.where(Job.status == status)
     return list(await session.scalars(stmt))
 
 
-async def cancel_job(session: AsyncSession, job_id: uuid.UUID) -> Job:
+async def cancel_job(
+    session: AsyncSession, job_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None
+) -> Job:
     """Cancel a job that hasn't started yet.
 
     SELECT ... FOR UPDATE locks the row until commit, so a worker can't claim the job
     between our status check and our write.
     """
     job = (
-        await session.scalars(select(Job).where(Job.id == job_id).with_for_update())
+        await session.scalars(
+            _owned(select(Job).where(Job.id == job_id), tenant_id).with_for_update()
+        )
     ).one_or_none()
     if job is None:
         raise JobNotFound(job_id)
@@ -160,11 +195,16 @@ async def cancel_job(session: AsyncSession, job_id: uuid.UUID) -> Job:
 
 
 async def list_dead_jobs(
-    session: AsyncSession, *, job_type: str | None, limit: int, offset: int
+    session: AsyncSession,
+    *,
+    job_type: str | None,
+    limit: int,
+    offset: int,
+    tenant_id: uuid.UUID | None = None,
 ) -> list[Job]:
     """The dead-letter queue: most recently died first."""
     stmt = (
-        select(Job)
+        _owned(select(Job), tenant_id)
         .where(Job.status == JobStatus.DEAD)
         .order_by(Job.finished_at.desc(), Job.id)
         .limit(limit)
@@ -175,7 +215,13 @@ async def list_dead_jobs(
     return list(await session.scalars(stmt))
 
 
-async def retry_dead_job(session: AsyncSession, queue: RedisQueue, job_id: uuid.UUID) -> Job:
+async def retry_dead_job(
+    session: AsyncSession,
+    queue: RedisQueue,
+    job_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | None = None,
+) -> Job:
     """Give a dead job a fresh set of attempts and put it back in the queue.
 
     attempts resets to 0, but lease_token is left alone: it must keep growing, or a
@@ -183,7 +229,9 @@ async def retry_dead_job(session: AsyncSession, queue: RedisQueue, job_id: uuid.
     last_error is kept so the reason it died stays visible until the next run.
     """
     job = (
-        await session.scalars(select(Job).where(Job.id == job_id).with_for_update())
+        await session.scalars(
+            _owned(select(Job).where(Job.id == job_id), tenant_id).with_for_update()
+        )
     ).one_or_none()
     if job is None:
         raise JobNotFound(job_id)

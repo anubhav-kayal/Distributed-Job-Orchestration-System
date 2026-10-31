@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from djos.models.base import Base
+from djos.models.tenant import DEFAULT_TENANT_ID
 
 
 class JobStatus(StrEnum):
@@ -77,8 +78,12 @@ class Job(Base):
 
     # Clients send an Idempotency-Key header; request_hash detects a key reused with a
     # different request body.
-    idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255))
     request_hash: Mapped[str | None] = mapped_column(String(64))
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), server_default=text(f"'{DEFAULT_TENANT_ID}'")
+    )
 
     # Workflow membership: the workflow, this job's name within it, and how many of its
     # dependencies haven't succeeded yet (kept for display; readiness is recounted).
@@ -113,6 +118,10 @@ class Job(Base):
         # The scheduler's query: scheduled jobs whose run_at has passed.
         Index("ix_jobs_status_run_at", "status", "run_at"),
         UniqueConstraint("workflow_id", "workflow_key"),
+        # Idempotency keys are scoped to a tenant: two tenants may use the same key.
+        UniqueConstraint("tenant_id", "idempotency_key"),
+        # The concurrency cap's query: how many of this tenant's jobs are running.
+        Index("ix_jobs_tenant_id_status", "tenant_id", "status"),
     )
     # Fetch DB-generated values (updated_at = now()) via RETURNING on INSERT/UPDATE.
     # Without this they'd be lazily reloaded on access, which async sessions can't do.

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from djos.core.db import db_now
 from djos.cron.expr import next_fire_after
 from djos.cron.schemas import ScheduleCreate, ScheduleUpdate
-from djos.models import CronSchedule
+from djos.models import DEFAULT_TENANT_ID, CronSchedule
 
 
 class ScheduleNotFound(Exception):
@@ -18,10 +18,13 @@ class ScheduleNameTaken(Exception):
     pass
 
 
-async def create_schedule(session: AsyncSession, data: ScheduleCreate) -> CronSchedule:
+async def create_schedule(
+    session: AsyncSession, data: ScheduleCreate, *, tenant_id: uuid.UUID = DEFAULT_TENANT_ID
+) -> CronSchedule:
     now = await db_now(session)
     schedule = CronSchedule(
         name=data.name,
+        tenant_id=tenant_id,
         cron_expr=data.cron,
         job=data.job.model_dump(mode="json"),
         enabled=data.enabled,
@@ -35,23 +38,43 @@ async def create_schedule(session: AsyncSession, data: ScheduleCreate) -> CronSc
     return schedule
 
 
-async def list_schedules(session: AsyncSession) -> list[CronSchedule]:
-    return list(await session.scalars(select(CronSchedule).order_by(CronSchedule.name)))
+def _owned(stmt, tenant_id: uuid.UUID | None):
+    return stmt if tenant_id is None else stmt.where(CronSchedule.tenant_id == tenant_id)
 
 
-async def get_schedule(session: AsyncSession, schedule_id: uuid.UUID) -> CronSchedule:
-    schedule = await session.get(CronSchedule, schedule_id)
+async def list_schedules(
+    session: AsyncSession, *, tenant_id: uuid.UUID | None = None
+) -> list[CronSchedule]:
+    return list(
+        await session.scalars(_owned(select(CronSchedule), tenant_id).order_by(CronSchedule.name))
+    )
+
+
+async def get_schedule(
+    session: AsyncSession, schedule_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None
+) -> CronSchedule:
+    schedule = (
+        await session.scalars(
+            _owned(select(CronSchedule).where(CronSchedule.id == schedule_id), tenant_id)
+        )
+    ).first()
     if schedule is None:
         raise ScheduleNotFound(schedule_id)
     return schedule
 
 
 async def update_schedule(
-    session: AsyncSession, schedule_id: uuid.UUID, data: ScheduleUpdate
+    session: AsyncSession,
+    schedule_id: uuid.UUID,
+    data: ScheduleUpdate,
+    *,
+    tenant_id: uuid.UUID | None = None,
 ) -> CronSchedule:
     schedule = (
         await session.scalars(
-            select(CronSchedule).where(CronSchedule.id == schedule_id).with_for_update()
+            _owned(
+                select(CronSchedule).where(CronSchedule.id == schedule_id), tenant_id
+            ).with_for_update()
         )
     ).one_or_none()
     if schedule is None:
@@ -72,9 +95,9 @@ async def update_schedule(
     return schedule
 
 
-async def delete_schedule(session: AsyncSession, schedule_id: uuid.UUID) -> None:
-    schedule = await session.get(CronSchedule, schedule_id)
-    if schedule is None:
-        raise ScheduleNotFound(schedule_id)
+async def delete_schedule(
+    session: AsyncSession, schedule_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None
+) -> None:
+    schedule = await get_schedule(session, schedule_id, tenant_id=tenant_id)
     await session.delete(schedule)
     await session.commit()

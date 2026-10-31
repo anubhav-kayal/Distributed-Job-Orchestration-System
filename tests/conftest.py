@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from djos.api.main import create_app
 from djos.core import db
 from djos.core.config import Settings
+from djos.models import DEFAULT_TENANT_ID
 from djos.queue import RedisQueue
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +35,10 @@ async def _truncate_all(url: str) -> None:
     engine = create_async_engine(url)
     async with engine.begin() as conn:
         await conn.execute(text("TRUNCATE jobs, cron_schedules, workflows CASCADE"))
+        # Keep the built-in default tenant; drop the ones tests created.
+        await conn.execute(
+            text("DELETE FROM tenants WHERE id <> :default"), {"default": DEFAULT_TENANT_ID}
+        )
     await engine.dispose()
 
 

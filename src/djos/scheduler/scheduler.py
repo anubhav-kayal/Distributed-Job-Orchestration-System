@@ -130,7 +130,7 @@ class Scheduler:
             log.error("schedule %s has an invalid job template: %s", schedule.name, exc)
             return None
         key = f"cron:{schedule.id}:{fire_time.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}"
-        job = await insert_job(session, spec, key, now=now)
+        job = await insert_job(session, spec, key, tenant_id=schedule.tenant_id, now=now)
         if job is None:
             log.warning("schedule %s already fired for %s; skipping", schedule.name, fire_time)
         return job

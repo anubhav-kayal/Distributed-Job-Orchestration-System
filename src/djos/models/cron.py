@@ -2,11 +2,12 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, String, func, text
+from sqlalchemy import DateTime, ForeignKey, Index, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from djos.models.base import Base
+from djos.models.tenant import DEFAULT_TENANT_ID
 
 
 class CronSchedule(Base):
@@ -15,7 +16,10 @@ class CronSchedule(Base):
     __tablename__ = "cron_schedules"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(100), unique=True)
+    name: Mapped[str] = mapped_column(String(100))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), server_default=text(f"'{DEFAULT_TENANT_ID}'")
+    )
     cron_expr: Mapped[str] = mapped_column(String(100))
     # A validated JobSpec (type, payload, priority, max_attempts) for every fired job.
     job: Mapped[dict[str, Any]] = mapped_column(JSONB)
@@ -33,5 +37,6 @@ class CronSchedule(Base):
     __table_args__ = (
         # The scheduler's query: enabled schedules whose next fire time has passed.
         Index("ix_cron_schedules_enabled_next_fire_at", "enabled", "next_fire_at"),
+        UniqueConstraint("tenant_id", "name"),
     )
     __mapper_args__ = {"eager_defaults": True}
