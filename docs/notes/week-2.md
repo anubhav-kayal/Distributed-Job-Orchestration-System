@@ -38,3 +38,38 @@
 - *Why jitter?* To de-correlate clients that failed for the same reason, so the recovering dependency doesn't get hit by synchronized waves.
 - *How do you run cron with high availability without double-firing?* Run several schedulers. Each locks due schedules with `SKIP LOCKED`, then inserts the job and advances the schedule atomically. An idempotency key per (schedule, fire time) makes a duplicate impossible even if that logic were bypassed.
 - *How do you add a field to an API that uses idempotency keys?* Make sure old requests still hash the same. Exclude unset new fields from the fingerprint, and pin the old fingerprint in a test.
+
+## Days 11–14: DAG workflows and multi-tenancy
+
+### Concepts
+
+| Day | Concept | The one thing to remember |
+|---|---|---|
+| 11 | DAG + Kahn's algorithm | Validating a workflow is a topological sort: repeatedly take nodes with no unfinished dependencies. Whatever is left over is on (or downstream of) a cycle. O(V + E). |
+| 11 | Unblocking inside the fenced transaction | Children are unblocked in the same transaction as the parent's fenced success write, so a stale worker can never unblock them a second time. |
+| 12 | Recount, don't decrement | A child is ready when *none of its dependencies is unfinished*, counted from real statuses. A decrementing counter would drift if any event were ever counted twice or missed. |
+| 12 | Lock ordering | Every path locks job → workflow → other jobs by id. Two parents finishing together serialize on the workflow row: no deadlock, and the shared child is unblocked exactly once. |
+| 12 | `upstream_failed` (Airflow's term) | Distinct from `cancelled`: an operator's cancel stays final, while jobs that never ran because a dependency died come back when that dependency is retried. |
+| 13 | Token bucket | A capacity (`burst`) and a refill rate. Bursts are allowed, but the sustained rate is capped. It's atomic in Lua using Redis's own clock, so API replicas agree. |
+| 13 | Noisy neighbors | A per-tenant cap on running jobs, checked at claim under the tenant row lock, keeps one tenant from occupying every worker. Over-cap jobs are deferred, not hot-looped. |
+| 13 | API keys | 256-bit random keys stored as SHA-256 hashes. A slow hash (bcrypt) is for low-entropy passwords; it buys nothing for random keys. |
+
+### Design decisions I can defend
+
+- **Workflow status is derived, not stored.** It's computed from the jobs when read, so it can't drift and finishing a job needs no extra write.
+- **The default tenant is a real row** with a fixed all-zero id rather than `tenant_id IS NULL`. Uniqueness constraints like `(tenant_id, idempotency_key)` then work without `NULLS NOT DISTINCT` tricks, and every row has an owner. The migration creates the row *before* adding the foreign keys, then backfills.
+- **Another tenant's job is a 404, not a 403.** A 403 would confirm that the id exists.
+- **Rate limiting fails open** when Redis is down. Postgres still guarantees correctness; strict limiting isn't worth refusing all work during an outage.
+- **The workflow lock is also why cancel is safe.** "Cancel workflow" takes the workflow row first. A parent finishing at the same moment either completes first (and its children are then cancelled), or waits and then sees them cancelled. No child slips through.
+
+### Bugs caught this half-week
+
+- **An empty `DJOS_ADMIN_TOKEN` was "the password is the empty string"**, so a request with no `Authorization` header matched it and got admin access. I found it by checking my own assumption before adding the setting to Compose. Fix: empty means disabled, a set token needs 16+ characters, and a missing bearer token is always rejected. There are regression tests for both.
+- **Exhaustive state-machine tests paid off again.** Adding the `blocked` status failed collection immediately because it had no transition rules.
+- **A demo that "passed" for the wrong reason.** The first rate-limit demo accepted all 50 requests: 20 tokens/s refilled faster than sequential `curl` could spend them. The limiter was right; the demo parameters weren't.
+
+### Proof
+
+- A diamond ETL on real containers: the two middle branches ran in parallel, and the join waited for the slower branch. With one branch failing permanently, the other still ran and the join became `upstream_failed` without running.
+- Two parents finishing at the same instant, 10 times: the shared child was enqueued exactly once each time. A fenced stale parent can't unblock its children again.
+- A noisy tenant capped at 1 running job submitted 30 jobs, then a quiet tenant submitted 5: the quiet tenant was done in 2s (≈5s stuck behind the flood without the cap). A 50-request burst against a 40-token bucket: 17 accepted, 33 refused with 429.

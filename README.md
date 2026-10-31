@@ -4,7 +4,7 @@ A distributed, fault-tolerant job orchestration system. Clients submit long-runn
 
 ## Status
 
-🚧 Building in public over 3 weeks ([plan](PLAN.md)). **Week 1 is complete:** the core pipeline, multi-worker coordination with leases and heartbeats, orphan reclaim, and fencing tokens. It's verified by killing workers under load (see [Proof](#proof)). **Week 2 in progress:** retries with backoff, a dead-letter queue, fair priority scheduling, and delayed and cron jobs are done. Notes: [week 1](docs/notes/week-1.md), [week 2](docs/notes/week-2.md).
+🚧 Building in public over 3 weeks ([plan](PLAN.md)). **Week 1 is complete:** the core pipeline, multi-worker coordination with leases and heartbeats, orphan reclaim, and fencing tokens. It's verified by killing workers under load (see [Proof](#proof)). **Week 2 is complete:** retries with backoff, a dead-letter queue, fair priority scheduling, delayed and cron jobs, DAG workflows, and multi-tenancy with API keys, rate limits and concurrency caps. Notes: [week 1](docs/notes/week-1.md), [week 2](docs/notes/week-2.md).
 
 ## The Problem
 
@@ -34,7 +34,7 @@ Client ──► API ───────────────────�
                cron schedule due ──► insert job + advance next_fire_at (one transaction)
 ```
 
-**Postgres is the source of truth.** Redis only carries job IDs and leases, so anything Redis loses can be rebuilt from Postgres. Coming next: DAG workflows, multi-tenancy with rate limits, Prometheus/Grafana, an autoscaler, and a full chaos suite.
+**Postgres is the source of truth.** Redis only carries job IDs and leases, so anything Redis loses can be rebuilt from Postgres. Coming in Week 3: Prometheus/Grafana, a full chaos suite, an autoscaler, benchmarks, and a Postgres-only queue backend for comparison.
 
 ## Core Guarantees
 
@@ -55,6 +55,10 @@ True exactly-once *execution* is impossible in a distributed system: a worker ca
 | **Dead-letter queue** (`dead` status, `GET /dlq`, `POST /dlq/{id}/retry`) | failed jobs vanishing, or looping forever | ✅ |
 | **Weighted priority rotation** (6/3/1 by default) | low priority starving under a flood of high | ✅ |
 | **Cron firing** (`SKIP LOCKED`, job + `next_fire_at` in one transaction, `cron:{id}:{time}` key) | duplicate or lost runs with several schedulers | ✅ |
+| **Workflow unblocking** inside the fenced finish, readiness recounted under ordered row locks | a child starting before its parents, or being started twice | ✅ |
+| **Failure propagation**: dead or cancelled job → descendants `upstream_failed`; DLQ retry revives them | half-run workflows stuck forever | ✅ |
+| **Tenant isolation**: API keys (SHA-256 hashed), every query scoped by tenant | one customer reading or cancelling another's jobs | ✅ |
+| **Token-bucket rate limit** (Lua, Redis clock) + **concurrency cap** at claim (tenant row lock) | a noisy tenant starving everyone else | ✅ |
 | Full chaos suite (kills, pauses, Redis restarts) + checker | untested failure modes | Week 3 |
 
 ### How a job runs
@@ -80,8 +84,10 @@ Each scenario is reproducible with one command against the Docker Compose stack:
 | `flaky` job failing twice | (see the Jobs API) | retried after 0.64s and 1.43s (full jitter within 1s and 2s windows), succeeded on attempt 3 |
 | Always-failing job, then a DLQ retry | (see the DLQ API) | dead after 3 attempts; the retry ran 3 fresh attempts (token kept growing: 3 → 6); a permanent error died after 1 |
 | Every-minute cron with **2 scheduler replicas** | `make verify-cron` | 4 minutes → exactly 4 jobs, one per minute; the fires were split between the replicas (2 each), 0 duplicates |
+| Diamond ETL workflow (`extract → clean, enrich → load → notify`) | (see the Workflows API) | `clean` and `enrich` ran in parallel; `load` started only after the slower branch finished; with `clean` failing, `enrich` still ran and `load` became `upstream_failed` without running |
+| Noisy tenant (max 1 running) floods 30 jobs, then a quiet tenant submits 5 | `make demo-tenants` | the quiet tenant's jobs finished in 2s (vs ≈5s stuck behind the flood); a 50-request burst against a 40-token bucket: 17 accepted, 33 × `429` |
 
-The test suite (178 tests, run in CI against real Postgres and Redis) covers the same scenarios deterministically, including a stale worker being fenced while the re-run is still in progress.
+The test suite (259 tests, run in CI against real Postgres and Redis) covers the same scenarios deterministically, including a stale worker being fenced while the re-run is still in progress.
 
 ## Tech Stack
 
@@ -105,6 +111,7 @@ make demo-pause
 make verify
 make chaos
 make verify-cron     # every-minute cron, 2 schedulers, ~3.5 minutes
+make demo-tenants    # noisy vs quiet tenant, rate limiting
 ```
 
 The API is at http://localhost:58000 (interactive docs at `/docs`). Host ports default to `58000` (API), `55432` (Postgres) and `56379` (Redis) to avoid clashing with locally installed services. Override them with `DJOS_API_HOST_PORT`, `DJOS_PG_HOST_PORT` and `DJOS_REDIS_HOST_PORT`. All app settings are environment variables prefixed `DJOS_` (see [`core/config.py`](src/djos/core/config.py)).
@@ -146,6 +153,40 @@ curl 'localhost:58000/dlq?type=fail'                 # dead jobs, newest first
 curl -X POST localhost:58000/dlq/<id>/retry          # re-queue with a fresh set of attempts
 ```
 
+### Workflows (DAGs)
+
+```bash
+curl -X POST localhost:58000/workflows -H 'Content-Type: application/json' -d '{
+  "name": "etl",
+  "jobs": [
+    {"key": "extract", "type": "sleep", "payload": {"seconds": 1}},
+    {"key": "clean",   "type": "sleep", "payload": {"seconds": 1}, "depends_on": ["extract"]},
+    {"key": "enrich",  "type": "sleep", "payload": {"seconds": 1}, "depends_on": ["extract"]},
+    {"key": "load",    "type": "sleep", "payload": {"seconds": 1}, "depends_on": ["clean", "enrich"]}
+  ]}'
+
+curl localhost:58000/workflows/<id>                  # status (derived) + every job with its dependencies
+curl -X POST localhost:58000/workflows/<id>/cancel   # cancel everything not yet running
+```
+
+The graph is validated on submit (cycles, unknown or duplicate keys, payloads), and all jobs are created in one transaction. A job becomes `queued` when every dependency has succeeded. If a dependency dies or is cancelled, the job becomes `upstream_failed` without running. Retrying the failed job from the DLQ revives those descendants, so the workflow resumes from where it failed. A workflow's status (`running`, `succeeded`, `failed` or `cancelled`) is computed from its jobs when you read it.
+
+### Tenants, API keys and limits
+
+```bash
+export DJOS_ADMIN_TOKEN=some-long-admin-token-123   # enables the admin API (off by default)
+docker compose up -d
+
+curl -X POST localhost:58000/admin/tenants -H "Authorization: Bearer $DJOS_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "acme", "rate_limit_per_second": 10, "burst": 50, "max_concurrency": 5}'
+# → {..., "api_key": "djos_…"}   shown once; only its SHA-256 hash is stored
+
+curl localhost:58000/jobs -H 'Authorization: Bearer djos_…'   # acme's jobs only
+```
+
+Every job, workflow, schedule and DLQ entry belongs to a tenant, and tenants can only see their own (another tenant's job is a `404`). Idempotency keys and schedule names are unique per tenant. Submissions spend tokens from the tenant's bucket (`429` + `Retry-After` when empty; a workflow costs one token per job). `max_concurrency` caps the tenant's running jobs across all workers: a job over the cap is deferred for a moment instead of run. Requests without a key use a built-in `default` tenant unless `DJOS_REQUIRE_API_KEY=true`, which you should set in production. Admin endpoints: `POST /admin/tenants`, `GET /admin/tenants`, `PUT /admin/tenants/{id}/limits`, `POST /admin/tenants/{id}/rotate-key`.
+
 ### Cron schedules
 
 ```bash
@@ -170,6 +211,11 @@ scheduled ──► queued ──► running ──► succeeded
     │  └──────────┼─┼────────┘                     (failed, attempts left: retry later)
     │             │ └─────────────── dead          (manual retry from the DLQ)
     └─────────────┴──────────────────► cancelled
+
+blocked ──► queued                         (workflow job: all dependencies succeeded)
+   │ ▲
+   ▼ │                                     (a dependency died or was cancelled /
+upstream_failed                             that dependency was retried from the DLQ)
 ```
 
 ## Known Limitations
@@ -178,6 +224,8 @@ scheduled ──► queued ──► running ──► succeeded
 - **Fencing protects writes this system controls.** It covers the job's status and its effect row. A handler calling an external service (payments, email) should also pass `job_id` as that service's idempotency key, because the stale run may already have made the call.
 - **The stranded-job check uses `LPOS`**, a linear scan of the queue, bounded per sweep. A very large backlog would want a reliable-queue pattern (`BLMOVE` into per-worker processing lists) instead.
 - **Each worker runs one job at a time.** You scale by adding workers.
+- **Tenant fairness is a cap, not a fair-share scheduler.** All tenants share one queue per priority. `max_concurrency` stops one tenant from occupying every worker, but over-cap jobs are deferred and re-checked rather than ordered by weighted fair queuing.
+- **Rate limiting fails open.** If Redis is unreachable, submissions are allowed rather than refused: availability is chosen over strict limiting.
 
 ## License
 
