@@ -21,7 +21,12 @@ def test_every_status_has_transition_rules():
 
 
 def test_terminal_statuses():
-    assert TERMINAL_STATUSES == {JobStatus.SUCCEEDED, JobStatus.DEAD, JobStatus.CANCELLED}
+    assert TERMINAL_STATUSES == {
+        JobStatus.SUCCEEDED,
+        JobStatus.DEAD,
+        JobStatus.CANCELLED,
+        JobStatus.UPSTREAM_FAILED,
+    }
 
 
 def test_happy_path_sets_attempts_and_timestamps():
@@ -99,3 +104,23 @@ def test_scheduled_job_can_be_cancelled():
     job = make_job(JobStatus.SCHEDULED)
     transition(job, JobStatus.CANCELLED)
     assert job.finished_at is not None
+
+
+def test_blocked_job_runs_once_unblocked_or_is_marked_upstream_failed():
+    job = make_job(JobStatus.BLOCKED)
+    transition(job, JobStatus.QUEUED)
+    assert job.finished_at is None
+
+    job = make_job(JobStatus.BLOCKED)
+    transition(job, JobStatus.UPSTREAM_FAILED)
+    assert job.finished_at is not None
+    assert job.attempts == 0  # it never ran
+
+
+def test_upstream_failed_can_only_go_back_to_blocked():
+    allowed = {t for t in JobStatus if can_transition(JobStatus.UPSTREAM_FAILED, t)}
+    assert allowed == {JobStatus.BLOCKED}
+    job = make_job(JobStatus.BLOCKED)
+    transition(job, JobStatus.UPSTREAM_FAILED)
+    transition(job, JobStatus.BLOCKED)
+    assert job.finished_at is None

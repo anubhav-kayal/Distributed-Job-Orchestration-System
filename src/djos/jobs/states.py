@@ -11,6 +11,15 @@ lives in exactly one place:
         └─────────────┴──────────────────► cancelled
 
 `dead` is final for the system: only an operator's DLQ retry moves a job out of it.
+
+Workflow jobs start `blocked` until every dependency has succeeded, then become `queued`.
+If a dependency dies or is cancelled they become `upstream_failed` without running, and
+go back to `blocked` if that dependency is retried from the DLQ:
+
+    blocked ──► queued ──► …
+       │ ▲
+       ▼ │
+    upstream_failed
 """
 
 from datetime import UTC, datetime
@@ -18,6 +27,11 @@ from datetime import UTC, datetime
 from djos.models import Job, JobStatus
 
 ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
+    JobStatus.BLOCKED: frozenset(
+        {JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.UPSTREAM_FAILED}
+    ),
+    # Back to waiting if the dependency that failed is retried from the DLQ.
+    JobStatus.UPSTREAM_FAILED: frozenset({JobStatus.BLOCKED}),
     JobStatus.SCHEDULED: frozenset({JobStatus.QUEUED, JobStatus.CANCELLED}),
     JobStatus.QUEUED: frozenset({JobStatus.RUNNING, JobStatus.CANCELLED}),
     JobStatus.RUNNING: frozenset(
@@ -28,9 +42,11 @@ ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.CANCELLED: frozenset(),
 }
 
-# Finished from the system's point of view (finished_at is set). `dead` is included even
-# though an operator can retry it from the DLQ.
-TERMINAL_STATUSES = frozenset({JobStatus.SUCCEEDED, JobStatus.DEAD, JobStatus.CANCELLED})
+# Finished from the system's point of view (finished_at is set). `dead` and
+# `upstream_failed` are included even though a DLQ retry can revive them.
+TERMINAL_STATUSES = frozenset(
+    {JobStatus.SUCCEEDED, JobStatus.DEAD, JobStatus.CANCELLED, JobStatus.UPSTREAM_FAILED}
+)
 
 
 class InvalidTransition(Exception):

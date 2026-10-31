@@ -8,9 +8,11 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Enum,
+    ForeignKey,
     Index,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -21,6 +23,8 @@ from djos.models.base import Base
 
 
 class JobStatus(StrEnum):
+    BLOCKED = "blocked"  # in a workflow, waiting for its dependencies to succeed
+    UPSTREAM_FAILED = "upstream_failed"  # a dependency died or was cancelled; never ran
     SCHEDULED = "scheduled"  # waiting until run_at (a retry backoff, or submitted for later)
     QUEUED = "queued"
     RUNNING = "running"
@@ -76,6 +80,14 @@ class Job(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True)
     request_hash: Mapped[str | None] = mapped_column(String(64))
 
+    # Workflow membership: the workflow, this job's name within it, and how many of its
+    # dependencies haven't succeeded yet (kept for display; readiness is recounted).
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    workflow_key: Mapped[str | None] = mapped_column(String(100))
+    pending_deps: Mapped[int] = mapped_column(server_default=text("0"))
+
     # Worker that most recently claimed the job (kept after it finishes, for debugging).
     locked_by: Mapped[str | None] = mapped_column(String(255))
     # Fencing token: incremented on every claim and never reset. A worker remembers the
@@ -100,6 +112,7 @@ class Job(Base):
         Index("ix_jobs_status_created_at", "status", "created_at"),
         # The scheduler's query: scheduled jobs whose run_at has passed.
         Index("ix_jobs_status_run_at", "status", "run_at"),
+        UniqueConstraint("workflow_id", "workflow_key"),
     )
     # Fetch DB-generated values (updated_at = now()) via RETURNING on INSERT/UPDATE.
     # Without this they'd be lazily reloaded on access, which async sessions can't do.
