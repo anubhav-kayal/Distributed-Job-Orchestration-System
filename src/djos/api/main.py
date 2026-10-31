@@ -3,10 +3,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from djos.api import dlq, health, jobs, schedules, workflows
+from djos.api import admin, dlq, health, jobs, schedules, workflows
 from djos.core import db, redis
 from djos.core.config import Settings, get_settings
 from djos.queue import RedisQueue
+from djos.tenancy.ratelimit import RateLimiter
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -22,6 +23,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.redis_url, socket_timeout=settings.redis_socket_timeout_seconds
         )
         app.state.queue = RedisQueue(app.state.redis)
+        app.state.limiter = RateLimiter(app.state.redis)
         try:
             yield
         finally:
@@ -34,6 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(dlq.router)
     app.include_router(schedules.router)
     app.include_router(workflows.router)
+    app.include_router(admin.router)
     return app
 
 

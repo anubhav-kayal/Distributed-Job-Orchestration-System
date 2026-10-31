@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     # Max wait for any single Redis reply. Must exceed worker_block_seconds (BLMPOP).
     redis_socket_timeout_seconds: float = 5.0
     log_level: str = "INFO"
+    # Tenancy. Without require_api_key, requests with no key act as the built-in default
+    # tenant (convenient locally; turn it on in production). The admin API (creating
+    # tenants and keys) is disabled unless admin_token is set.
+    require_api_key: bool = False
+    admin_token: SecretStr | None = None
+    # A job whose tenant is at its concurrency limit is deferred this long, not run.
+    tenant_defer_seconds: float = 1.0
     # How long a readiness probe waits on a dependency before calling it down.
     dependency_timeout_seconds: float = 2.0
     # How long a worker blocks on an empty queue before re-checking for shutdown.
