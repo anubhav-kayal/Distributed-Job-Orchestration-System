@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,6 +15,10 @@ class Settings(BaseSettings):
     # Max wait for any single Redis reply. Must exceed worker_block_seconds (BLMPOP).
     redis_socket_timeout_seconds: float = 5.0
     log_level: str = "INFO"
+    # "json" (one object per line, for log aggregation) or "text" (for humans).
+    log_format: Literal["json", "text"] = "text"
+    # Port for /metrics in the worker, monitor and scheduler (the API serves its own).
+    metrics_port: int = 9100
     # Tenancy. Without require_api_key, requests with no key act as the built-in default
     # tenant (convenient locally; turn it on in production). The admin API (creating
     # tenants and keys) is disabled unless admin_token is set.

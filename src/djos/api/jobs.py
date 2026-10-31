@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
 
 from djos.api.deps import QueueDep, SessionDep, TenantDep, enforce_rate_limit
+from djos.core import metrics
 from djos.jobs import service
 from djos.jobs.schemas import JobCreate, JobList, JobOut
 from djos.jobs.states import InvalidTransition
@@ -42,7 +43,9 @@ async def submit_job(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Idempotency-Key was already used with a different request body",
         ) from None
-    if not created:
+    if created:
+        metrics.JOBS_SUBMITTED.labels(job.type, job.priority.value).inc()
+    else:
         response.status_code = status.HTTP_200_OK
         response.headers["Idempotent-Replayed"] = "true"
     return JobOut.model_validate(job)

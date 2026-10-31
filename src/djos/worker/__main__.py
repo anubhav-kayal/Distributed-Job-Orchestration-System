@@ -1,12 +1,12 @@
 """Entry point: `python -m djos.worker`."""
 
 import asyncio
-import logging
 import signal
 
 from djos.coordination import Leases
-from djos.core import db, redis
+from djos.core import db, metrics, redis
 from djos.core.config import get_settings
+from djos.core.logging import setup_logging
 from djos.jobs.retry import RetryPolicy
 from djos.models import Priority
 from djos.queue import RedisQueue
@@ -15,9 +15,8 @@ from djos.worker import Worker
 
 async def main() -> None:
     settings = get_settings()
-    logging.basicConfig(
-        level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    setup_logging(settings.log_level, settings.log_format)
+    metrics.serve(settings.metrics_port)
 
     engine = db.create_engine(settings.database_url)
     redis_client = redis.create_redis(

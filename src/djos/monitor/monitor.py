@@ -30,10 +30,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from redis.exceptions import RedisError
-from sqlalchemy import select, tuple_
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from djos.coordination import Leases
+from djos.core import metrics
 from djos.jobs.states import transition
 from djos.models import Job, JobStatus
 from djos.queue import RedisQueue
@@ -91,7 +92,19 @@ class Monitor:
         result = SweepResult()
         await self.reclaim_orphans(result)
         await self.reenqueue_stranded(result)
+        await self.update_gauges()
         return result
+
+    async def update_gauges(self) -> None:
+        """Point-in-time numbers for dashboards: queue depth and jobs per status."""
+        for priority, depth in (await self.queue.depth()).items():
+            metrics.QUEUE_DEPTH.labels(priority.value).set(depth)
+        async with self.sessionmaker() as session:
+            counts = dict(
+                (await session.execute(select(Job.status, func.count()).group_by(Job.status))).all()
+            )
+        for status in JobStatus:  # every status, so a drained one drops to 0 rather than vanishing
+            metrics.JOBS_BY_STATUS.labels(status.value).set(counts.get(status, 0))
 
     async def reclaim_orphans(self, result: SweepResult) -> None:
         after: uuid.UUID | None = None
@@ -140,10 +153,12 @@ class Monitor:
                 transition(job, JobStatus.DEAD)
                 await on_job_finished(session, job)  # its workflow descendants can't run
                 result.dead += 1
+                metrics.RECLAIMS.labels("dead").inc()
             else:
                 job.last_error = f"{reason}; requeued"
                 transition(job, JobStatus.QUEUED)
                 result.requeued += 1
+                metrics.RECLAIMS.labels("requeued").inc()
             await session.commit()
             log.warning("job %s: %s", job_id, job.last_error)
 
@@ -177,4 +192,5 @@ class Monitor:
         if not await self.queue.contains(job_id, priority):
             await self.queue.enqueue(job_id, priority)
             result.reenqueued += 1
+            metrics.STRANDED_REENQUEUED.inc()
             log.warning("job %s was queued but missing from Redis; re-enqueued", job_id)

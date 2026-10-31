@@ -6,6 +6,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from djos.core import metrics
 from djos.models import DEFAULT_TENANT_ID, Tenant
 from djos.queue import RedisQueue
 from djos.tenancy.keys import hash_api_key
@@ -80,6 +81,7 @@ async def enforce_rate_limit(request: Request, tenant: Tenant, cost: int = 1) ->
     decision = await limiter.take(tenant.id, tenant.rate_limit_per_second, tenant.burst, cost)
     if decision.allowed:
         return
+    metrics.RATE_LIMITED.inc()
     if decision.retry_after == float("inf"):
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,

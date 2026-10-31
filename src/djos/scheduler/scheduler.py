@@ -38,6 +38,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from djos.core import metrics
 from djos.core.db import db_now
 from djos.cron.expr import next_fire_after
 from djos.jobs.schemas import JobCreate
@@ -116,6 +117,7 @@ class Scheduler:
             await session.commit()
 
         await self._enqueue([j for j in fired if j.status is JobStatus.QUEUED])
+        metrics.CRON_FIRES.inc(len(fired))
         return len(fired)
 
     async def _fire(
@@ -153,6 +155,7 @@ class Scheduler:
             await session.commit()
 
         await self._enqueue(due)
+        metrics.JOBS_PROMOTED.inc(len(due))
         if due:
             log.info("promoted %d due job(s)", len(due))
         return len(due)

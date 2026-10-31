@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
 
 from djos.api.deps import QueueDep, SessionDep, TenantDep, enforce_rate_limit
+from djos.core import metrics
 from djos.workflows import service
 from djos.workflows.schemas import WorkflowCreate, WorkflowList, WorkflowOut
 
@@ -41,7 +42,10 @@ async def submit_workflow(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Idempotency-Key was already used with a different request body",
         ) from None
-    if not created:
+    if created:
+        for job in body.jobs:
+            metrics.JOBS_SUBMITTED.labels(job.type, job.priority.value).inc()
+    else:
         response.status_code = status.HTTP_200_OK
         response.headers["Idempotent-Replayed"] = "true"
     return await service.get_workflow(session, workflow.id, tenant_id=tenant.id)

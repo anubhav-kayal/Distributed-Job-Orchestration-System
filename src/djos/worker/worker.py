@@ -32,6 +32,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from djos.coordination import Leases
+from djos.core import metrics
+from djos.core.logging import bind
 from djos.handlers import JobContext, PermanentError, UnknownJobType, get_handler
 from djos.jobs.retry import RetryPolicy
 from djos.jobs.states import TERMINAL_STATUSES, transition
@@ -126,9 +128,19 @@ class Worker:
             log.info("job %s is leased by %s; skipping", job_id, await self.leases.holder(job_id))
             return True
         try:
-            job = await self._claim(job_id)
-            if job is not None:
-                await self._run_and_record(job, owner)
+            with bind(job_id=job_id, worker_id=self.worker_id):
+                job = await self._claim(job_id)
+                if job is not None:
+                    runnable_since = job.run_at or job.created_at
+                    metrics.QUEUE_WAIT.labels(job.priority.value).observe(
+                        max(0.0, (job.started_at - runnable_since).total_seconds())
+                    )
+                    metrics.WORKER_BUSY.set(1)
+                    try:
+                        with bind(tenant_id=job.tenant_id, lease_token=job.lease_token):
+                            await self._run_and_record(job, owner)
+                    finally:
+                        metrics.WORKER_BUSY.set(0)
         finally:
             try:
                 await self.leases.release(job_id, owner)
@@ -156,6 +168,7 @@ class Worker:
                 job.run_at = datetime.now(UTC) + timedelta(seconds=self.tenant_defer_seconds)
                 transition(job, JobStatus.SCHEDULED)
                 await session.commit()
+                metrics.JOBS_DEFERRED.inc()
                 log.info(
                     "job %s deferred: tenant %s is at its concurrency limit", job_id, job.tenant_id
                 )
@@ -197,6 +210,7 @@ class Worker:
             with contextlib.suppress(asyncio.CancelledError):
                 await work
             exc = heartbeat.exception()
+            metrics.LEASES_LOST.inc()
             log.warning("abandoning job %s: %s", job.id, exc)
             return
 
@@ -221,6 +235,7 @@ class Worker:
         except (UnknownJobType, ValidationError) as exc:
             log.error("job %s can never run: %s", job.id, exc)
             return Outcome(False, error=_describe(exc), retryable=False)
+        started = time.monotonic()
         try:
             result = await handler.fn(payload, ctx)
         except PermanentError as exc:
@@ -229,6 +244,8 @@ class Worker:
         except Exception as exc:
             log.exception("job %s failed", job.id)
             return Outcome(False, error=_describe(exc))
+        finally:
+            metrics.JOB_DURATION.labels(job.type).observe(time.monotonic() - started)
         log.info("job %s succeeded", job.id)
         return Outcome(True, result=result)
 
@@ -266,15 +283,18 @@ class Worker:
                     job.status,
                     job.lease_token,
                 )
+                metrics.FENCED_WRITES.inc()
                 return False
             job.result = outcome.result
             job.last_error = outcome.error
             if outcome.succeeded:
                 transition(job, JobStatus.SUCCEEDED)
+                result_label = "succeeded"
             elif outcome.retryable and job.attempts < job.max_attempts:
                 delay = self.retry_policy.delay(job.attempts)
                 job.run_at = datetime.now(UTC) + timedelta(seconds=delay)
                 transition(job, JobStatus.SCHEDULED)
+                result_label = "retry"
                 log.info(
                     "job %s will retry in %.2fs (attempt %d of %d failed)",
                     job_id,
@@ -284,6 +304,7 @@ class Worker:
                 )
             else:
                 transition(job, JobStatus.DEAD)
+                result_label = "dead"
                 log.warning(
                     "job %s is dead after %d attempt(s): %s", job_id, job.attempts, outcome.error
                 )
@@ -302,6 +323,7 @@ class Worker:
             # commits together with this outcome, so it happens exactly once.
             ready = await on_job_finished(session, job) if job.status in TERMINAL_STATUSES else []
             await session.commit()
+        metrics.JOBS_FINISHED.labels(job.type, result_label).inc()
         for child in ready:
             try:
                 await self.queue.enqueue(child.id, child.priority)
