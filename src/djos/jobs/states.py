@@ -33,7 +33,8 @@ ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     # Back to waiting if the dependency that failed is retried from the DLQ.
     JobStatus.UPSTREAM_FAILED: frozenset({JobStatus.BLOCKED}),
     JobStatus.SCHEDULED: frozenset({JobStatus.QUEUED, JobStatus.CANCELLED}),
-    JobStatus.QUEUED: frozenset({JobStatus.RUNNING, JobStatus.CANCELLED}),
+    # queued → scheduled: deferred because its tenant is at its concurrency limit.
+    JobStatus.QUEUED: frozenset({JobStatus.RUNNING, JobStatus.CANCELLED, JobStatus.SCHEDULED}),
     JobStatus.RUNNING: frozenset(
         {JobStatus.SUCCEEDED, JobStatus.DEAD, JobStatus.QUEUED, JobStatus.SCHEDULED}
     ),

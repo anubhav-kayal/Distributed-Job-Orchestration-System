@@ -28,14 +28,14 @@ from typing import Any
 
 from pydantic import ValidationError
 from redis.exceptions import RedisError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from djos.coordination import Leases
 from djos.handlers import JobContext, PermanentError, UnknownJobType, get_handler
 from djos.jobs.retry import RetryPolicy
 from djos.jobs.states import TERMINAL_STATUSES, transition
-from djos.models import Effect, Job, JobStatus, Priority
+from djos.models import Effect, Job, JobStatus, Priority, Tenant
 from djos.queue import RedisQueue, WeightedRotation
 from djos.workflows.engine import on_job_finished
 
@@ -80,6 +80,7 @@ class Worker:
         heartbeat_seconds: float = 10.0,
         retry_policy: RetryPolicy | None = None,
         priority_weights: dict[Priority, int] | None = None,
+        tenant_defer_seconds: float = 1.0,
     ):
         if heartbeat_seconds * 2 > leases.ttl_ms / 1000:
             raise ValueError("heartbeat interval must be at most half the lease TTL")
@@ -91,6 +92,7 @@ class Worker:
         self.heartbeat_seconds = heartbeat_seconds
         self.retry_policy = retry_policy or RetryPolicy()
         self.rotation = WeightedRotation(priority_weights)
+        self.tenant_defer_seconds = tenant_defer_seconds
 
     async def run(self, stop: asyncio.Event) -> None:
         """Process jobs until `stop` is set. A job in progress is always finished first;
@@ -148,10 +150,40 @@ class Worker:
                 # Duplicate push, or cancelled while waiting in the queue.
                 log.info("job %s is %s, not queued; skipping", job_id, job.status)
                 return None
+            if await self._tenant_at_capacity(session, job):
+                # Don't run it now, and don't hot-loop on it either: hand it back to the
+                # scheduler for a moment, so other tenants' jobs get the worker meanwhile.
+                job.run_at = datetime.now(UTC) + timedelta(seconds=self.tenant_defer_seconds)
+                transition(job, JobStatus.SCHEDULED)
+                await session.commit()
+                log.info(
+                    "job %s deferred: tenant %s is at its concurrency limit", job_id, job.tenant_id
+                )
+                return None
             transition(job, JobStatus.RUNNING)
             job.locked_by = self.worker_id
             await session.commit()
             return job
+
+    async def _tenant_at_capacity(self, session, job: Job) -> bool:
+        """Whether the job's tenant already has max_concurrency jobs running.
+
+        The tenant row is locked (FOR UPDATE) while counting, so two workers claiming
+        jobs of the same tenant at once take turns: neither can count, see room for one
+        more, and both start. Lock order is job → tenant, the same on every path.
+        """
+        limit = await session.scalar(
+            select(Tenant.max_concurrency).where(Tenant.id == job.tenant_id)
+        )
+        if limit is None:
+            return False
+        await session.execute(select(Tenant.id).where(Tenant.id == job.tenant_id).with_for_update())
+        running = await session.scalar(
+            select(func.count()).where(
+                Job.tenant_id == job.tenant_id, Job.status == JobStatus.RUNNING
+            )
+        )
+        return running >= limit
 
     async def _run_and_record(self, job: Job, owner: str) -> None:
         log.info("running job %s type=%s attempt=%d", job.id, job.type, job.attempts)

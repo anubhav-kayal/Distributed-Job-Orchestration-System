@@ -30,6 +30,7 @@ async def main() -> None:
         block_seconds=settings.worker_block_seconds,
         heartbeat_seconds=settings.heartbeat_interval_seconds,
         retry_policy=RetryPolicy(settings.retry_base_seconds, settings.retry_cap_seconds),
+        tenant_defer_seconds=settings.tenant_defer_seconds,
         priority_weights={
             Priority.HIGH: settings.priority_weight_high,
             Priority.NORMAL: settings.priority_weight_normal,
