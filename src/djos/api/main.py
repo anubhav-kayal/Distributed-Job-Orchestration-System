@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from djos.api import admin, dlq, health, jobs, observability, schedules, workflows
+from djos.api import admin, console, dlq, health, jobs, observability, schedules, workflows
 from djos.core import db, redis
 from djos.core.config import Settings, get_settings
 from djos.core.logging import setup_logging
@@ -41,6 +41,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(schedules.router)
     app.include_router(workflows.router)
     app.include_router(admin.router)
+    app.include_router(console.router)
     return app
 
 
