@@ -100,6 +100,15 @@ services:
       redis:
         condition: service_healthy
 
+  # The web console: static React build served by nginx, /api proxied to the API.
+  web:
+    build: ./web
+    ports:
+      - "${DJOS_WEB_HOST_PORT:-58080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
   prometheus:
     image: prom/prometheus:v3.4.0
     volumes:
