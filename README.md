@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/anubhav-kayal/Distributed-Job-Orchestration-System/actions/workflows/ci.yml/badge.svg)](https://github.com/anubhav-kayal/Distributed-Job-Orchestration-System/actions/workflows/ci.yml)
 
-A distributed, fault-tolerant job orchestrator. Clients submit jobs, DAG workflows and cron schedules; independent workers run them with **exactly-once effects**, even when workers crash, freeze mid-job, or Redis loses all of its data. Python 3.12 · FastAPI · PostgreSQL · Redis · Prometheus · Grafana · Docker Compose.
+A distributed, fault-tolerant job orchestrator. Clients submit jobs, DAG workflows and cron schedules; independent workers run them with **exactly-once effects**, even when workers crash, freeze mid-job, or Redis loses all of its data. Python 3.12, FastAPI, PostgreSQL, Redis, React + TypeScript, Prometheus, Grafana, Docker Compose.
 
 ![Grafana dashboard during a chaos run](docs/img/dashboard.png)
 <sub>The provisioned Grafana dashboard during a chaos run: 1,500 jobs with a worker SIGKILLed every 6 s. 0 lost, 0 duplicated effects.</sub>
@@ -12,9 +12,24 @@ A distributed, fault-tolerant job orchestrator. Clients submit jobs, DAG workflo
 - **Exactly-once effects under failure:** leases with heartbeats, a monitor that reclaims orphaned jobs, and **fencing tokens** that reject a stalled worker's late write. A chaos suite (worker SIGKILLs, `docker pause` past the lease, control-plane restarts, **Redis SIGKILLed with all queues and leases lost**) checks the invariants from Postgres after every run.
 - **Orchestration features:** priorities with weighted fairness, retries with exponential backoff and full jitter, a dead-letter queue with retry, delayed jobs, cron with any number of schedulers, and **DAG workflows** with failure propagation and resume-from-failure.
 - **Multi-tenant:** API keys (hashed), per-tenant isolation, token-bucket rate limits (`429` + `Retry-After`) and concurrency caps against noisy neighbors.
+- **A web console** (React + TypeScript): a live dispatch board of running jobs, job and workflow drill-down with a dependency diagram, one-click DLQ retry, cron schedules, and tenant management.
 - **Operable:** RED metrics and coordination metrics in Prometheus, a generated Grafana dashboard, 4 alert rules, JSON logs carrying `job_id` / `lease_token`, a backlog-driven **autoscaler** (2 → 8 → 2 workers, HPA-style hysteresis), and graceful drain.
 - **Measured:** ~620 jobs/s of pure coordination overhead at 4 workers, linear scaling for real work, 71 ms p99 end-to-end at 20 jobs/s, and ≈4.2 s recovery from a SIGKILL (4 s lease). Plus a **Redis vs Postgres `SKIP LOCKED`** queue comparison ([benchmarks](docs/benchmarks/README.md)).
-- **Tested:** 285 tests (unit and integration against real Postgres and Redis) in CI, and every claim above reproducible with one `make` target.
+- **Tested:** 289 backend tests (unit and integration against real Postgres and Redis) plus console typecheck, unit tests and build, all in CI, and every claim above reproducible with one `make` target.
+
+## Web console
+
+`make up` serves it at http://localhost:58080.
+
+![The dispatch board](docs/img/console.png)
+<sub>The dispatch board: every job for the tenant by status, with a strip for each running job showing its worker, attempt and fencing token. It updates every two seconds.</sub>
+
+- **Board:** counts per status, the running jobs, the waiting backlog per priority, throughput over the last 5 minutes, and the latest failures.
+- **Jobs:** filter by status, open a job to see its timeline, payload, result or error, cancel it, or retry it from the dead-letter queue. A form built from each job type's payload schema submits new jobs.
+- **Workflows:** a diagram of each DAG, with jobs in dependency columns, lit by status, and edges that turn green as dependencies are satisfied.
+- **Dead letters, Schedules and Tenants:** retry with one click; create, pause and resume cron schedules; create tenants with limits (the API key is shown once).
+
+The console is a static React app (TypeScript, Vite, React Router, TanStack Query) served by nginx, which proxies `/api` to the API, so the browser sees one origin and no CORS is needed. Run it with hot reload with `cd web && npm install && npm run dev`.
 
 ## The problem
 
@@ -113,8 +128,8 @@ Both backends hit the same ceiling, **Postgres commits** (two per job, the price
 Requires Docker (or OrbStack) and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-make up              # API, 3 workers, monitor, scheduler, Postgres, Redis, Prometheus, Grafana
-make test            # 285 tests (needs Postgres + Redis: make up, or docker compose up -d postgres redis)
+make up              # API, web console, 3 workers, monitor, scheduler, Postgres, Redis, Prometheus, Grafana
+make test            # 289 backend tests (needs Postgres + Redis: make up, or docker compose up -d postgres redis)
 make lint
 
 make chaos           # chaos suite + invariant checker (~2 minutes)
@@ -126,7 +141,7 @@ make autoscale       # run the autoscaler (on the host)
 make bench           # benchmarks → docs/benchmarks (BACKEND=redis|postgres)
 ```
 
-The API is at http://localhost:58000 (OpenAPI docs at `/docs`). Host ports default to `58000` (API), `55432` (Postgres), `56379` (Redis), `59090` (Prometheus) and `53000` (Grafana) to avoid clashing with local services. All settings are environment variables prefixed `DJOS_` (see [`core/config.py`](src/djos/core/config.py)).
+The console is at http://localhost:58080 and the API at http://localhost:58000 (OpenAPI docs at `/docs`). Host ports default to `58080` (console), `58000` (API), `55432` (Postgres), `56379` (Redis), `59090` (Prometheus) and `53000` (Grafana) to avoid clashing with local services. All settings are environment variables prefixed `DJOS_` (see [`core/config.py`](src/djos/core/config.py)).
 
 ### Project layout
 
@@ -141,6 +156,7 @@ src/djos/
   scheduler/    due-job promotion, cron firing
   workflows/    DAG validation (Kahn), engine (unblock / fail / revive), API service
   cron/ tenancy/ autoscaler/ handlers/ models/ core/
+web/            the console: React + TypeScript + Vite, served by nginx
 migrations/     Alembic (hand-written data and CHECK-constraint migrations where needed)
 chaos/          fault injection + invariant checker
 bench/          benchmark harness + report generator
